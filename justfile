@@ -38,6 +38,9 @@ unused-deps:
 typos:
     typos
 
+mutants *args:
+    cargo mutants {{args}}
+
 # Static analysis on GitHub Actions workflow files.
 zizmor:
     zizmor .github/workflows

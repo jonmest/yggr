@@ -6,3 +6,6 @@ pub mod incoming;
 pub mod log;
 pub mod role_state;
 pub mod telemetry;
+
+#[cfg(test)]
+mod tests;

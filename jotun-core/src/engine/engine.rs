@@ -36,6 +36,42 @@ pub struct Engine<C> {
 }
 
 impl<C> Engine<C> {
+    /// Create a fresh follower in term 0 with an empty log and no recorded vote.
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            state: RaftState {
+                current_term: Term::ZERO,
+                voted_for: None,
+                log: Log::new(),
+                commit_index: LogIndex::ZERO,
+                last_applied: LogIndex::ZERO,
+                role: RoleState::Follower(FollowerState::default()),
+            },
+        }
+    }
+
+    pub fn id(&self) -> NodeId {
+        self.id
+    }
+
+    pub fn current_term(&self) -> Term {
+        self.state.current_term
+    }
+
+    pub fn voted_for(&self) -> Option<NodeId> {
+        self.state.voted_for
+    }
+
+    pub fn role(&self) -> &RoleState {
+        &self.state.role
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut RaftState<C> {
+        &mut self.state
+    }
+
     #[instrument(
         target = "jotun::engine",
         skip_all,
@@ -91,13 +127,14 @@ impl<C> Engine<C> {
             self.become_follower(request.term);
         }
 
-        let is_valid_term = request.term >= self.state.current_term;
+        let is_valid_term = request.term == self.state.current_term;
         let is_vote_available = self.state.voted_for.is_none_or(|v| v == request.candidate_id);
-        let candidate_log_valid = request.last_log_id.is_some_and(|log| {
-            log.term >= self.state.current_term && log.index >= self.state.commit_index
-        });
+        let candidate_log_valid = self.state.log.is_superseded_by(request.last_log_id);
 
         let granted = is_valid_term && is_vote_available && candidate_log_valid;
+        if granted {
+            self.state.voted_for = Some(request.candidate_id);
+        }
         tracing::Span::current().record(
             telemetry::fields::DECISION,
             if granted { "granted" } else { "rejected" },

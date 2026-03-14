@@ -79,4 +79,14 @@ impl<C> Log<C> {
             self.entries.truncate(i);
         }
     }
+
+    pub fn is_superseded_by(&self, candidate_last_log: Option<LogId>) -> bool {
+        match (self.last_log_id(), candidate_last_log) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(ours), Some(theirs)) => {
+                theirs.term > ours.term || (theirs.term == ours.term && theirs.index >= ours.index)
+            }
+        }
+    }
 }

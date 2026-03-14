@@ -1,0 +1,28 @@
+# cargo-mutants config. run with `cargo mutants` or `just mutants`.
+#
+# Mutation testing flips operators and constants in your source and verifies
+# the test suite catches the change. An untested mutant ("caught: 0") means
+# the tests don't distinguish that piece of behavior.
+
+# Use nextest since our suite depends on it locally.
+test_tool = "nextest"
+
+# Skip generated protobuf code and the scaffolded engine methods with todo!()
+# bodies — they can't be meaningfully mutated yet.
+exclude_globs = [
+    "**/target/**",
+    "jotun-core/src/transport/protobuf/**",
+]
+
+# Functions with todo!() in their body aren't real code yet. Skip until
+# they're implemented to avoid noise.
+exclude_re = [
+    "on_tick",
+    "on_client_proposal",
+    "on_vote_response",
+    "become_leader",
+]
+
+# Fail if any mutant survives. Turn this off while iterating and back on
+# once the suite is in good shape.
+# minimum_test_timeout = 60
