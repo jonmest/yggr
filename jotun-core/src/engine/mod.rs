@@ -3,4 +3,5 @@ pub mod action;
 pub mod engine;
 pub mod event;
 pub mod incoming;
+pub mod log;
 pub mod role_state;

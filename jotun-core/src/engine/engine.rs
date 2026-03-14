@@ -1,11 +1,12 @@
-// Scaffolding: remove these allows once the engine is implemented.
 #![allow(
     dead_code,
     unused_variables,
     unreachable_code,
     clippy::needless_pass_by_value
 )]
-
+use crate::engine::log::Log;
+use crate::records::message::Message::*;
+use crate::records::vote::{RequestVote, VoteResponse, VoteResult};
 use crate::{
     engine::{
         action::Action,
@@ -13,7 +14,6 @@ use crate::{
         incoming::Incoming,
         role_state::{CandidateState, FollowerState, LeaderState, RoleState},
     },
-    records::log_entry::LogEntry,
     types::{index::LogIndex, node::NodeId, term::Term},
 };
 
@@ -21,7 +21,7 @@ use crate::{
 pub struct RaftState<C> {
     pub current_term: Term,
     pub voted_for: Option<NodeId>,
-    pub log: Vec<LogEntry<C>>,
+    pub log: Log<C>,
     pub commit_index: LogIndex,
     pub last_applied: LogIndex,
     pub role: RoleState,
@@ -47,11 +47,41 @@ impl<C> Engine<C> {
     }
 
     fn on_incoming(&mut self, incoming: Incoming<C>) -> Vec<Action<C>> {
-        todo!()
+        match incoming.message {
+            VoteRequest(request_vote) => vec![self.on_vote_request(request_vote)],
+            VoteResponse(vote_response) => vec![self.on_vote_response(vote_response)],
+            AppendEntriesRequest(request_append_entries) => todo!(),
+            AppendEntriesResponse(append_entries_response) => todo!(),
+        }
     }
 
     fn on_client_proposal(&mut self, command: C) -> Vec<Action<C>> {
         todo!()
+    }
+
+    fn on_vote_response(&mut self, request: VoteResponse) -> Action<C> {
+        todo!()
+    }
+    
+    fn on_vote_request(&mut self, request: RequestVote) -> Action<C> {        
+        if request.term > self.state.current_term {
+            self.become_follower(request.term);
+        }
+
+        let is_valid_term = request.term >= self.state.current_term;
+        let is_vote_available = self.state.voted_for.is_none_or(|v| v == request.candidate_id);
+        let candidate_log_valid = request.last_log_id.is_some_and(|log| {
+            log.term >= self.state.current_term && 
+            log.index >= self.state.commit_index 
+        });
+        
+        let msg = if is_valid_term && is_vote_available && candidate_log_valid {
+            VoteResponse { term: self.state.current_term, result: VoteResult::Granted }
+        } else {
+            VoteResponse { term: self.state.current_term, result: VoteResult::Rejected }
+        };
+
+        Action::Send { to: request.candidate_id, message: VoteResponse(msg) }
     }
 
     fn become_follower(&mut self, term: Term) {
