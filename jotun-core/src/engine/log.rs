@@ -1,3 +1,7 @@
+// log indices are u64 but we back the log with a Vec; `u64 as usize` is safe
+// on any 64-bit target and a log larger than 2^32 won't fit in RAM on 32-bit.
+#![allow(clippy::cast_possible_truncation)]
+
 use crate::records::log_entry::LogEntry;
 use crate::types::{index::LogIndex, log::LogId, term::Term};
 
@@ -74,7 +78,7 @@ impl<C> Log<C> {
     }
 
     /// remove all entries with index `>= index`. no-op if `index` is past the end.
-    /// used by followers when an AppendEntries RPC conflicts with local state.
+    /// used by followers when an `AppendEntries` RPC conflicts with local state.
     pub fn truncate_from(&mut self, index: LogIndex) {
         let i = index.get().saturating_sub(1) as usize;
         if i < self.entries.len() {
@@ -82,6 +86,7 @@ impl<C> Log<C> {
         }
     }
 
+    #[must_use]
     pub fn is_superseded_by(&self, candidate_last_log: Option<LogId>) -> bool {
         match (self.last_log_id(), candidate_last_log) {
             (None, _) => true,

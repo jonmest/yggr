@@ -1,4 +1,4 @@
-//! Tests for the RequestVote handler in [`Engine::on_vote_request`].
+//! Tests for the `RequestVote` handler in [`Engine::on_vote_request`].
 
 use super::fixtures::{
     expect_vote_response, follower, log_id, node, seed_log, term, vote_request, vote_request_from,
@@ -151,7 +151,7 @@ fn follower_grants_when_candidate_log_term_is_strictly_greater() {
 // Invariants (property tests)
 // ---------------------------------------------------------------------------
 
-/// Arbitrary RequestVote where the candidate id is never 1 (our test node's id).
+/// Arbitrary `RequestVote` where the candidate id is never 1 (our test node's id).
 fn any_vote_request() -> impl Strategy<Value = (u64, crate::records::vote::RequestVote)> {
     let candidate = 2u64..10;
     let term_n = 0u64..20;
@@ -269,7 +269,7 @@ proptest! {
         (from, request) in any_vote_request(),
     ) {
         let mut engine = follower(1);
-        let first = engine.step(vote_request_from(from, request.clone()));
+        let first = engine.step(vote_request_from(from, request));
         let term_after_first = engine.current_term();
         let voted_after_first = engine.voted_for();
 

@@ -2,14 +2,16 @@
     dead_code,
     unused_variables,
     unreachable_code,
-    clippy::needless_pass_by_value
+    clippy::needless_pass_by_value,
+    clippy::unused_self
 )]
 use crate::engine::log::Log;
 use crate::engine::telemetry;
 use crate::records::append_entries::{
     AppendEntriesResponse, AppendEntriesResult, RequestAppendEntries,
 };
-use crate::records::message::Message::{self, *};
+#[allow(clippy::enum_glob_use)] // match-heavy file; variants are used unqualified throughout
+use crate::records::message::Message::*;
 use crate::records::vote::{RequestVote, VoteResponse, VoteResult};
 use crate::{
     engine::{
@@ -40,6 +42,7 @@ pub struct Engine<C> {
 
 impl<C> Engine<C> {
     /// Create a fresh follower in term 0 with an empty log and no recorded vote.
+    #[must_use]
     pub fn new(id: NodeId) -> Self {
         Self {
             id,
@@ -54,6 +57,7 @@ impl<C> Engine<C> {
         }
     }
 
+    #[must_use]
     pub fn id(&self) -> NodeId {
         self.id
     }
@@ -62,10 +66,12 @@ impl<C> Engine<C> {
         self.state.current_term
     }
 
+    #[must_use]
     pub fn voted_for(&self) -> Option<NodeId> {
         self.state.voted_for
     }
 
+    #[must_use]
     pub fn role(&self) -> &RoleState {
         &self.state.role
     }
@@ -74,6 +80,7 @@ impl<C> Engine<C> {
         self.state.commit_index
     }
 
+    #[must_use]
     pub fn log(&self) -> &Log<C> {
         &self.state.log
     }
@@ -151,13 +158,12 @@ impl<C> Engine<C> {
                 .entry_at(id.index)
                 .is_none_or(|e| e.id.term != id.term)
         }) {
-            return self.conflict(
-                request.leader_id,
-                match self.state.log.last_log_id() {
-                    None => LogIndex::ZERO,
-                    Some(i) => i.index.next(),
-                },
-            );
+            let hint = self
+                .state
+                .log
+                .last_log_id()
+                .map_or(LogIndex::new(1), |l| l.index.next());
+            return self.conflict(request.leader_id, hint);
         }
 
         for entry in request.entries {
@@ -173,8 +179,7 @@ impl<C> Engine<C> {
                                 .state
                                 .log
                                 .last_log_id()
-                                .map(|l| l.index.next())
-                                .unwrap_or(LogIndex::new(1));
+                                .map_or(LogIndex::new(1), |l| l.index.next());
                             return self.conflict(request.leader_id, hint);
                         }
                         self.state.log.truncate_from(entry.id.index);
@@ -188,8 +193,7 @@ impl<C> Engine<C> {
             .state
             .log
             .last_log_id()
-            .map(|l| l.index)
-            .unwrap_or(LogIndex::ZERO);
+            .map_or(LogIndex::ZERO, |l| l.index);
 
         if request.leader_commit > self.state.commit_index {
             self.state.commit_index = request.leader_commit.min(last_appended);

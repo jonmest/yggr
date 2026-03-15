@@ -1,4 +1,4 @@
-//! Tests for the AppendEntries receiver in [`Engine::on_append_entries_request`].
+//! Tests for the `AppendEntries` receiver in [`Engine::on_append_entries_request`].
 use super::fixtures::{
     append_entries_from, append_entries_request, expect_append_entries_response, follower,
     log_entries, log_id, seed_log, term,
@@ -285,7 +285,7 @@ proptest! {
         conflict_at_offset in 0u64..3,
     ) {
         // Seed with `seed_len` entries, all at term 1.
-        let terms: Vec<u64> = vec![1; seed_len as usize];
+        let terms: Vec<u64> = vec![1; usize::try_from(seed_len).unwrap()];
         let mut engine = follower(1);
         seed_log(&mut engine, &terms);
 
