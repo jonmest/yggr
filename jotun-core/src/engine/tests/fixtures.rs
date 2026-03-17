@@ -3,6 +3,7 @@
 
 use crate::engine::action::Action;
 use crate::engine::engine::Engine;
+use crate::engine::env::{Env, StaticEnv};
 use crate::engine::event::Event;
 use crate::engine::incoming::Incoming;
 use crate::records::append_entries::{AppendEntriesResponse, RequestAppendEntries};
@@ -11,17 +12,46 @@ use crate::records::message::Message;
 use crate::records::vote::{RequestVote, VoteResponse};
 use crate::types::{index::LogIndex, log::LogId, node::NodeId, term::Term};
 
+/// Default election timeout (ticks) used by test fixtures. Chosen generous
+/// enough to make off-by-one errors in timer logic obvious.
+pub(super) const DEFAULT_ELECTION_TIMEOUT: u64 = 10;
+
+/// Default heartbeat interval (ticks). Smaller than the election timeout
+/// per §5.2.
+pub(super) const DEFAULT_HEARTBEAT_INTERVAL: u64 = 1;
+
 /// A fresh follower with no peers: term 0, empty log, no prior vote.
 /// Suitable for receive-side tests that don't need peer broadcast.
 /// Commands are `Vec<u8>` so tests don't have to juggle a command type.
 pub(super) fn follower(id: u64) -> Engine<Vec<u8>> {
-    Engine::new(node(id), std::iter::empty())
+    Engine::new(
+        node(id),
+        std::iter::empty(),
+        Box::new(StaticEnv(DEFAULT_ELECTION_TIMEOUT)),
+        DEFAULT_HEARTBEAT_INTERVAL,
+    )
 }
 
 /// A fresh follower in a cluster of the given peer ids. Self is excluded
 /// automatically by the constructor.
 pub(super) fn follower_in_cluster(id: u64, peers: &[u64]) -> Engine<Vec<u8>> {
-    Engine::new(node(id), peers.iter().map(|&p| node(p)))
+    Engine::new(
+        node(id),
+        peers.iter().map(|&p| node(p)),
+        Box::new(StaticEnv(DEFAULT_ELECTION_TIMEOUT)),
+        DEFAULT_HEARTBEAT_INTERVAL,
+    )
+}
+
+/// A follower that uses a caller-supplied `Env`. For tests that need to
+/// script a specific sequence of election timeouts.
+pub(super) fn follower_with_env(id: u64, peers: &[u64], env: Box<dyn Env>) -> Engine<Vec<u8>> {
+    Engine::new(
+        node(id),
+        peers.iter().map(|&p| node(p)),
+        env,
+        DEFAULT_HEARTBEAT_INTERVAL,
+    )
 }
 
 pub(super) fn node(id: u64) -> NodeId {

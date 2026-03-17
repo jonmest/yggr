@@ -7,6 +7,7 @@
 )]
 use std::collections::BTreeSet;
 
+use crate::engine::env::Env;
 use crate::engine::log::Log;
 use crate::engine::telemetry;
 use crate::records::append_entries::{
@@ -34,12 +35,17 @@ pub struct RaftState<C> {
     pub commit_index: LogIndex,
     pub last_applied: LogIndex,
     pub role: RoleState,
+    pub election_timeout_ticks: u64,
+    pub election_elapsed: u64,
+    pub heartbeat_elapsed: u64,
 }
 
 #[derive(Debug)]
 pub struct Engine<C> {
     id: NodeId,
     peers: BTreeSet<NodeId>,
+    env: Box<dyn Env>,
+    heartbeat_interval_ticks: u64,
     state: RaftState<C>,
 }
 
@@ -50,11 +56,20 @@ impl<C> Engine<C> {
     /// excluded, so the caller can pass the full cluster membership without
     /// filtering.
     #[must_use]
-    pub fn new(id: NodeId, peers: impl IntoIterator<Item = NodeId>) -> Self {
+    pub fn new(
+        id: NodeId,
+        peers: impl IntoIterator<Item = NodeId>,
+        mut env: Box<dyn Env>,
+        heartbeat_interval_ticks: u64,
+    ) -> Self {
         let peers = peers.into_iter().filter(|p| *p != id).collect();
+        let election_timeout_ticks = env.next_election_timeout();
+
         Self {
             id,
             peers,
+            env,
+            heartbeat_interval_ticks,
             state: RaftState {
                 current_term: Term::ZERO,
                 voted_for: None,
@@ -62,6 +77,9 @@ impl<C> Engine<C> {
                 commit_index: LogIndex::ZERO,
                 last_applied: LogIndex::ZERO,
                 role: RoleState::Follower(FollowerState::default()),
+                election_elapsed: 0,
+                heartbeat_elapsed: 0,
+                election_timeout_ticks,
             },
         }
     }
