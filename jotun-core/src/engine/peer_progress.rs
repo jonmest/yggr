@@ -97,6 +97,8 @@ impl PeerProgress {
         values.push(leader_last_log);
         values.sort_unstable();
         let pos = (values.len() - 1) / 2;
+        // `values` is non-empty (we just pushed), so `pos < values.len()`.
+        #[allow(clippy::indexing_slicing)]
         values[pos]
     }
 

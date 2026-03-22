@@ -46,6 +46,9 @@ impl ScriptedEnv {
 
 impl Env for ScriptedEnv {
     fn next_election_timeout(&mut self) -> u64 {
+        // `new` rejects empty vecs, and `idx` is always taken mod `len`,
+        // so `idx < len` holds for every call.
+        #[allow(clippy::indexing_slicing)]
         let v = self.values[self.idx];
         self.idx = (self.idx + 1) % self.values.len();
         v
