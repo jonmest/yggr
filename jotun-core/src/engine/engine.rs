@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::engine::env::Env;
 use crate::engine::log::Log;
+use crate::engine::peer_progress::PeerProgress;
 use crate::engine::telemetry;
 use crate::records::append_entries::{
     AppendEntriesResponse, AppendEntriesResult, RequestAppendEntries,
@@ -142,6 +143,13 @@ impl<C> Engine<C> {
         &self.state.log
     }
 
+    /// Number of votes required to win an election in this cluster.
+    /// `cluster_size = peers + self`; majority = `cluster_size / 2 + 1`.
+    #[must_use]
+    pub fn cluster_majority(&self) -> usize {
+        self.peers.len().div_ceil(2) + 1
+    }
+
     #[cfg(test)]
     pub(crate) fn state_mut(&mut self) -> &mut RaftState<C> {
         &mut self.state
@@ -243,6 +251,9 @@ impl<C> Engine<C> {
 
     fn start_election(&mut self) -> Vec<Action<C>> {
         self.become_candidate();
+        if self.has_majority_votes() {
+            return self.become_leader();
+        }
 
         let request = RequestVote {
             term: self.state.current_term,
@@ -270,7 +281,7 @@ impl<C> Engine<C> {
     fn on_incoming(&mut self, incoming: Incoming<C>) -> Vec<Action<C>> {
         match incoming.message {
             VoteRequest(request_vote) => vec![self.on_vote_request(request_vote)],
-            VoteResponse(vote_response) => vec![self.on_vote_response(vote_response)],
+            VoteResponse(vote_response) => self.on_vote_response(incoming.from, vote_response),
             AppendEntriesRequest(request_append_entries) => {
                 vec![self.on_append_entries_request(request_append_entries)]
             }
@@ -283,9 +294,38 @@ impl<C> Engine<C> {
         todo!()
     }
 
+    fn has_majority_votes(&self) -> bool {
+        match self.role() {
+            RoleState::Candidate(state) => state.votes_granted.len() >= self.cluster_majority(),
+            _ => false,
+        }
+    }
+
     #[instrument(target = "jotun::engine", skip_all)]
-    fn on_vote_response(&mut self, request: VoteResponse) -> Action<C> {
-        todo!()
+    fn on_vote_response(&mut self, voter_id: NodeId, response: VoteResponse) -> Vec<Action<C>> {
+        if response.term > self.state.current_term {
+            self.become_follower(response.term);
+            return vec![];
+        }
+        if response.term < self.state.current_term {
+            return vec![];
+        }
+
+        // `c` borrow ends after the insert; NLL releases it before
+        // has_majority_votes() and become_leader() are called.
+        let RoleState::Candidate(c) = &mut self.state.role else {
+            return vec![];
+        };
+
+        if response.result == VoteResult::Granted {
+            c.votes_granted.insert(voter_id);
+        }
+
+        if self.has_majority_votes() {
+            return self.become_leader();
+        }
+
+        vec![]
     }
 
     #[instrument(
@@ -446,17 +486,24 @@ impl<C> Engine<C> {
         let from_term = self.state.current_term;
         self.state.current_term = self.state.current_term.next();
         self.state.voted_for = Some(self.id);
-        self.state.role = RoleState::Candidate(CandidateState { votes_granted: 1 });
+
+        let mut votes_granted = BTreeSet::new();
+        votes_granted.insert(self.id());
+
+        self.state.role = RoleState::Candidate(CandidateState { votes_granted });
         self.reset_election_timer();
 
         telemetry::term_advanced(self.id, from_term, self.state.current_term);
         telemetry::became_candidate(self.id, self.state.current_term);
     }
 
-    fn become_leader(&mut self) {
-        let progress = todo!();
+    fn become_leader(&mut self) -> Vec<Action<C>> {
+        let last_log_index = self.log().last_log_id().map_or(LogIndex::ZERO, |l| l.index);
 
+        let progress = PeerProgress::new(self.peers.iter().copied(), last_log_index);
         self.state.role = RoleState::Leader(LeaderState { progress });
         telemetry::became_leader(self.id, self.state.current_term);
+
+        self.send_heartbeats()
     }
 }

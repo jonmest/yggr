@@ -1,11 +1,13 @@
-use crate::engine::peer_progress::PeerProgress;
+use std::collections::BTreeSet;
+
+use crate::{engine::peer_progress::PeerProgress, types::node::NodeId};
 
 #[derive(Default, Copy, Clone, Debug)]
 pub struct FollowerState {}
 
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct CandidateState {
-    pub votes_granted: usize,
+    pub votes_granted: BTreeSet<NodeId>,
 }
 
 #[derive(Default, Clone, Debug)]

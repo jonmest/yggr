@@ -1,10 +1,13 @@
 //! Tests for the `AppendEntries` receiver in [`Engine::on_append_entries_request`].
+use std::collections::BTreeSet;
+
 use super::fixtures::{
     append_entries_from, append_entries_request, expect_append_entries_response, follower,
     log_entries, log_id, seed_log, term,
 };
 use crate::records::append_entries::AppendEntriesResult;
 use crate::types::index::LogIndex;
+use crate::types::node::NodeId;
 use proptest::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -72,8 +75,11 @@ fn candidate_steps_down_when_current_term_leader_appears() {
         let state = engine.state_mut();
         state.current_term = term(1);
         state.voted_for = Some(super::fixtures::node(1));
+        let mut votes_granted = BTreeSet::new();
+        votes_granted.insert(NodeId::new(1).unwrap());
+
         state.role =
-            RoleState::Candidate(crate::engine::role_state::CandidateState { votes_granted: 1 });
+            RoleState::Candidate(crate::engine::role_state::CandidateState { votes_granted });
     }
 
     // A legitimate leader for term 1 sends an AppendEntries.

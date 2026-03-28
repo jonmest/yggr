@@ -161,6 +161,22 @@ pub(super) fn expect_vote_response(actions: &[Action<Vec<u8>>]) -> VoteResponse 
     }
 }
 
+/// Wrap a `VoteResponse` into the Event envelope the engine accepts.
+pub(super) fn vote_response_from(from: u64, term_n: u64, granted: bool) -> Event<Vec<u8>> {
+    use crate::records::vote::{VoteResponse, VoteResult};
+    Event::Incoming(Incoming {
+        from: node(from),
+        message: Message::VoteResponse(VoteResponse {
+            term: term(term_n),
+            result: if granted {
+                VoteResult::Granted
+            } else {
+                VoteResult::Rejected
+            },
+        }),
+    })
+}
+
 /// Extract every `Send(RequestVote)` action, paired with its destination.
 /// Order is not guaranteed; callers that care sort by peer id.
 pub(super) fn collect_vote_requests(actions: &[Action<Vec<u8>>]) -> Vec<(NodeId, RequestVote)> {
