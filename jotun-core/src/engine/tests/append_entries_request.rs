@@ -182,6 +182,56 @@ fn mismatched_prev_log_term_is_rejected() {
 }
 
 #[test]
+fn conflict_hint_for_longer_divergent_follower_does_not_exceed_prev_index() {
+    // Follower has 5 entries at term 1. New leader at term 2 sends
+    // prev=(index=2, term=2) — same index, divergent term, and our log
+    // is *longer* than prev_index. The hint must NOT be our_last+1=6
+    // (which would push the leader past its own log on retry); it must
+    // be capped at prev.index=2 so the leader walks back from there.
+    let mut engine = follower(1);
+    seed_log(&mut engine, &[1, 1, 1, 1, 1]);
+
+    let actions = engine.step(append_entries_from(
+        2,
+        append_entries_request(2, 2, Some(log_id(2, 2)), vec![], 0),
+    ));
+
+    let response = expect_append_entries_response(&actions);
+    match response.result {
+        AppendEntriesResult::Conflict { next_index_hint } => {
+            assert!(
+                next_index_hint <= LogIndex::new(2),
+                "hint {next_index_hint:?} must not exceed prev.index=2; \
+                 a higher hint lets the leader synthesize prev_log_id \
+                 from a region we don't actually agree on",
+            );
+        }
+        AppendEntriesResult::Success { .. } => panic!("expected Conflict, got Success"),
+    }
+}
+
+#[test]
+fn conflict_hint_for_short_follower_uses_our_last_plus_one() {
+    // Follower has 2 entries; leader's prev is at index 5. Our last+1=3,
+    // which is < prev.index=5, so cap doesn't bite — hint should be 3.
+    let mut engine = follower(1);
+    seed_log(&mut engine, &[1, 1]);
+
+    let actions = engine.step(append_entries_from(
+        2,
+        append_entries_request(1, 2, Some(log_id(5, 1)), vec![], 0),
+    ));
+
+    let response = expect_append_entries_response(&actions);
+    match response.result {
+        AppendEntriesResult::Conflict { next_index_hint } => {
+            assert_eq!(next_index_hint, LogIndex::new(3));
+        }
+        AppendEntriesResult::Success { .. } => panic!("expected Conflict, got Success"),
+    }
+}
+
+#[test]
 fn accepts_from_empty_log_when_prev_log_is_none() {
     let mut engine = follower(1);
 

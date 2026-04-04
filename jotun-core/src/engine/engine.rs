@@ -497,17 +497,25 @@ impl<C: Clone> Engine<C> {
 
         self.reset_election_timer();
 
-        if request.prev_log_id.is_some_and(|id| {
-            self.state
+        if let Some(prev) = request.prev_log_id
+            && self
+                .state
                 .log
-                .entry_at(id.index)
-                .is_none_or(|e| e.id.term != id.term)
-        }) {
-            let hint = self
+                .entry_at(prev.index)
+                .is_none_or(|e| e.id.term != prev.term)
+        {
+            // The leader will set nextIndex[us] = hint, then build a new
+            // AppendEntries with prev_log_index = hint - 1. We must NEVER
+            // return a hint past `prev.index` itself: that would let the
+            // leader synthesize a prev_log_id covering a region we and it
+            // don't actually agree on, and the next reply would falsely
+            // ack entries we don't have. Cap at min(our_last + 1, prev.index).
+            let our_last_next = self
                 .state
                 .log
                 .last_log_id()
                 .map_or(LogIndex::new(1), |l| l.index.next());
+            let hint = our_last_next.min(prev.index);
             return vec![self.conflict(request.leader_id, hint)];
         }
 
@@ -520,11 +528,11 @@ impl<C: Clone> Engine<C> {
                         // overwrite a committed entry. Defend against malformed
                         // or buggy senders rather than corrupt committed state.
                         if entry.id.index <= self.state.commit_index {
-                            let hint = self
-                                .state
-                                .log
-                                .last_log_id()
-                                .map_or(LogIndex::new(1), |l| l.index.next());
+                            // Cap at the conflicting index so the leader
+                            // doesn't get a hint past where we actually
+                            // disagree. See the comment in the prev-log
+                            // mismatch arm.
+                            let hint = entry.id.index;
                             return vec![self.conflict(request.leader_id, hint)];
                         }
                         self.state.log.truncate_from(entry.id.index);
@@ -585,16 +593,24 @@ impl<C: Clone> Engine<C> {
             return vec![];
         };
 
+        let leader_last = self
+            .state
+            .log
+            .last_log_id()
+            .map_or(LogIndex::ZERO, |l| l.index);
+
         match response.result {
             AppendEntriesResult::Success { last_appended } => {
                 let last_appended = last_appended.unwrap_or(LogIndex::ZERO);
+                // A correct follower never acks beyond what we sent, which
+                // is bounded by our own log. Reject impossible acks rather
+                // than poisoning matchIndex with values we can't even look
+                // up — see §5.3 commit safety.
+                if last_appended > leader_last {
+                    return vec![];
+                }
                 leader.progress.record_success(peer, last_appended);
 
-                let leader_last = self
-                    .state
-                    .log
-                    .last_log_id()
-                    .map_or(LogIndex::ZERO, |l| l.index);
                 let RoleState::Leader(leader) = &self.state.role else {
                     unreachable!("we just confirmed Leader above");
                 };
@@ -609,7 +625,13 @@ impl<C: Clone> Engine<C> {
                 vec![]
             }
             AppendEntriesResult::Conflict { next_index_hint } => {
-                leader.progress.record_conflict(peer, next_index_hint);
+                // Clamp the hint to our own log: nextIndex must never point
+                // past leader_last + 1. A buggy or malicious follower could
+                // otherwise push us into synthesising prev_log_id from a
+                // region of our log that doesn't exist.
+                let cap = leader_last.next();
+                let hint = next_index_hint.min(cap);
+                leader.progress.record_conflict(peer, hint);
                 vec![self.append_entries_to(peer)]
             }
         }

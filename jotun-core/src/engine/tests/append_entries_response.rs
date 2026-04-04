@@ -289,6 +289,53 @@ fn conflict_does_not_advance_commit_or_emit_apply() {
     assert!(collect_apply(&actions).is_empty());
 }
 
+#[test]
+fn conflict_hint_past_leader_log_is_clamped() {
+    // Leader has log = [(1, 1)=Noop] (just elected, empty pre-election).
+    // Peer returns a hint of 99 — bogus or buggy. The leader must clamp
+    // nextIndex to leader_last+1 = 2; otherwise the next AppendEntries
+    // synthesizes prev_log_id from log entries that don't exist.
+    let mut engine = elected_leader_3_node();
+    let leader_last_next = engine
+        .log()
+        .last_log_id()
+        .map_or(LogIndex::new(1), |l| l.index.next());
+
+    engine.step(append_entries_conflict_from(2, 1, 99));
+
+    let RoleState::Leader(s) = engine.role() else {
+        panic!("expected Leader");
+    };
+    assert_eq!(
+        s.progress().next_for(node(2)),
+        Some(leader_last_next),
+        "nextIndex must be clamped to leader_last + 1, never past our own log",
+    );
+}
+
+#[test]
+fn success_with_last_appended_past_leader_log_is_ignored() {
+    // Peer claims it has up to index 99. Our log only goes to index 1.
+    // A correct follower never acks past what we sent, so this is a
+    // buggy/malicious response — must not poison matchIndex with a
+    // value we can't even look up in our own log (would let
+    // commit_index advance to phantom entries).
+    let mut engine = elected_leader_3_node();
+    let leader_last = engine.log().last_log_id().unwrap().index;
+
+    engine.step(append_entries_success_from(2, 1, 99));
+
+    let RoleState::Leader(s) = engine.role() else {
+        panic!("expected Leader");
+    };
+    assert_eq!(
+        s.progress().match_for(node(2)),
+        Some(LogIndex::ZERO),
+        "matchIndex must not be set past leader_last={}",
+        leader_last.get(),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Invariants (property tests)
 // ---------------------------------------------------------------------------
