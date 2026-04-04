@@ -28,22 +28,25 @@ impl Env for StaticEnv {
 }
 
 /// An [`Env`] that returns a scripted sequence of election timeouts, cycling
-/// when exhausted. Primarily a test tool for verifying that the engine
-/// actually re-queries the env on each timer reset.
+/// when exhausted. Test tool for verifying that the engine actually re-queries
+/// the env on each timer reset.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct ScriptedEnv {
+pub(crate) struct ScriptedEnv {
     values: Vec<u64>,
     idx: usize,
 }
 
+#[cfg(test)]
 impl ScriptedEnv {
     #[must_use]
-    pub fn new(values: Vec<u64>) -> Self {
+    pub(crate) fn new(values: Vec<u64>) -> Self {
         assert!(!values.is_empty(), "ScriptedEnv needs at least one value");
         Self { values, idx: 0 }
     }
 }
 
+#[cfg(test)]
 impl Env for ScriptedEnv {
     fn next_election_timeout(&mut self) -> u64 {
         // `new` rejects empty vecs, and `idx` is always taken mod `len`,

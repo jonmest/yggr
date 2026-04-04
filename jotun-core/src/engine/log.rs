@@ -13,13 +13,13 @@ use crate::types::{index::LogIndex, log::LogId, term::Term};
 /// of a real entry. Internally backed by a `Vec`; later this can be
 /// swapped for a disk-backed implementation behind the same API.
 ///
-/// **Invariants** (debug-checked by [`Log::check_invariants`]):
+/// **Invariants** (debug-checked internally):
 ///  - Entry indices are contiguous starting at 1.
 ///  - Entry terms are non-decreasing across the log (a leader only
 ///    appends at its current term, which is monotonic across leadership).
 ///
-/// Followers reconcile against incoming `AppendEntries` via
-/// [`Log::truncate_from`] + [`Log::append`]; leaders use
+/// Followers reconcile against incoming `AppendEntries` by truncating
+/// conflicting tails and appending missing entries; leaders use
 /// [`Log::entries_from`] to slice out what each peer needs next.
 #[derive(Debug)]
 pub struct Log<C> {
@@ -34,7 +34,7 @@ impl<C> Default for Log<C> {
 
 impl<C> Log<C> {
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
@@ -80,7 +80,7 @@ impl<C> Log<C> {
 
     /// append a single entry. caller is responsible for constructing entries
     /// with contiguous indices; in debug builds this is checked.
-    pub fn append(&mut self, entry: LogEntry<C>) {
+    pub(crate) fn append(&mut self, entry: LogEntry<C>) {
         debug_assert!(
             match self.entries.last() {
                 None => entry.id.index == LogIndex::new(1),
@@ -93,7 +93,7 @@ impl<C> Log<C> {
 
     /// remove all entries with index `>= index`. no-op if `index` is past the end.
     /// used by followers when an `AppendEntries` RPC conflicts with local state.
-    pub fn truncate_from(&mut self, index: LogIndex) {
+    pub(crate) fn truncate_from(&mut self, index: LogIndex) {
         let i = index.get().saturating_sub(1) as usize;
         if i < self.entries.len() {
             self.entries.truncate(i);
@@ -119,7 +119,7 @@ impl<C> Log<C> {
     ///  - entry terms are non-decreasing across the log (a leader only appends
     ///    at its current term, which is monotonic across leadership).
     #[cfg(debug_assertions)]
-    pub fn check_invariants(&self) {
+    pub(crate) fn check_invariants(&self) {
         let mut prev_term: Option<Term> = None;
         for (i, entry) in self.entries.iter().enumerate() {
             let expected = LogIndex::new((i as u64) + 1);
@@ -140,5 +140,5 @@ impl<C> Log<C> {
     }
 
     #[cfg(not(debug_assertions))]
-    pub fn check_invariants(&self) {}
+    pub(crate) fn check_invariants(&self) {}
 }

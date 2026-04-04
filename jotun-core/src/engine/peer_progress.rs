@@ -18,7 +18,8 @@ use crate::types::{index::LogIndex, node::NodeId};
 
 /// Tracks `nextIndex` and `matchIndex` for every peer the leader knows about.
 /// Self is intentionally absent: the leader's own progress is implicitly its
-/// last log index, which gets folded into [`PeerProgress::majority_index`].
+/// last log index, which gets folded into the internal majority calculation
+/// that drives commit-index advancement.
 #[derive(Debug, Clone, Default)]
 pub struct PeerProgress {
     next_index: BTreeMap<NodeId, LogIndex>,
@@ -30,7 +31,10 @@ impl PeerProgress {
     ///  - `nextIndex[p] = leader_last_log_index + 1`,
     ///  - `matchIndex[p] = 0`.
     #[must_use]
-    pub fn new(peers: impl IntoIterator<Item = NodeId>, leader_last_log_index: LogIndex) -> Self {
+    pub(crate) fn new(
+        peers: impl IntoIterator<Item = NodeId>,
+        leader_last_log_index: LogIndex,
+    ) -> Self {
         let next = leader_last_log_index.next();
         let mut next_index = BTreeMap::new();
         let mut match_index = BTreeMap::new();
@@ -61,7 +65,7 @@ impl PeerProgress {
     /// that would rewind `matchIndex` are silently ignored — this is the
     /// correctness-critical behaviour that makes `majority_index` safe.
     /// No-op on unknown peers (e.g., removed by a config change).
-    pub fn record_success(&mut self, peer: NodeId, last_appended: LogIndex) {
+    pub(crate) fn record_success(&mut self, peer: NodeId, last_appended: LogIndex) {
         // §5.3: guard the whole update on matchIndex monotonicity. If a stale
         // response doesn't advance matchIndex, it also must not rewind
         // nextIndex — a later conflict may have already pushed nextIndex
@@ -79,7 +83,7 @@ impl PeerProgress {
     /// Record a conflict response. The leader jumps `nextIndex` to the hint
     /// the follower supplied (capped at 1 — index 0 is the pre-log sentinel).
     /// `matchIndex` is untouched. No-op on unknown peers.
-    pub fn record_conflict(&mut self, peer: NodeId, hint: LogIndex) {
+    pub(crate) fn record_conflict(&mut self, peer: NodeId, hint: LogIndex) {
         if let Some(n) = self.next_index.get_mut(&peer) {
             *n = hint.max(LogIndex::new(1));
         }
@@ -92,7 +96,7 @@ impl PeerProgress {
     /// Algorithm (§5.3): sort all `matchIndex` values along with the
     /// leader's own, and pick the median (lower-middle for even sizes). This
     /// is the highest `N` such that `matchIndex[i] >= N` for a majority.
-    pub fn majority_index(&self, leader_last_log: LogIndex) -> LogIndex {
+    pub(crate) fn majority_index(&self, leader_last_log: LogIndex) -> LogIndex {
         let mut values: Vec<LogIndex> = self.match_index.values().copied().collect();
         values.push(leader_last_log);
         values.sort_unstable();
@@ -100,19 +104,6 @@ impl PeerProgress {
         // `values` is non-empty (we just pushed), so `pos < values.len()`.
         #[allow(clippy::indexing_slicing)]
         values[pos]
-    }
-
-    /// Add a new peer. Used during future membership changes (§6).
-    /// Initialises their progress as if this were a fresh election.
-    pub fn add_peer(&mut self, peer: NodeId, leader_last_log_index: LogIndex) {
-        self.next_index.insert(peer, leader_last_log_index.next());
-        self.match_index.insert(peer, LogIndex::ZERO);
-    }
-
-    /// Remove a peer. Used during future membership changes (§6).
-    pub fn remove_peer(&mut self, peer: NodeId) {
-        self.next_index.remove(&peer);
-        self.match_index.remove(&peer);
     }
 
     /// Iterate over all tracked peer ids, sorted.
@@ -301,25 +292,6 @@ mod tests {
         pp.record_success(node(4), idx(2));
         // Sorted values: [2, 5, 5, 7]. Pos 1 = 5. Three of four are ≥ 5. ✓
         assert_eq!(pp.majority_index(idx(7)), idx(5));
-    }
-
-    // ---------------- membership ----------------
-
-    #[test]
-    fn add_peer_initializes_correctly() {
-        let mut pp = PeerProgress::new([node(2)], idx(5));
-        pp.add_peer(node(3), idx(8));
-        assert_eq!(pp.next_for(node(3)), Some(idx(9)));
-        assert_eq!(pp.match_for(node(3)), Some(LogIndex::ZERO));
-    }
-
-    #[test]
-    fn remove_peer_drops_all_entries() {
-        let mut pp = PeerProgress::new([node(2), node(3)], idx(5));
-        pp.remove_peer(node(2));
-        assert!(pp.next_for(node(2)).is_none());
-        assert!(pp.match_for(node(2)).is_none());
-        assert_eq!(pp.peer_count(), 1);
     }
 
     // ---------------- property: matchIndex monotonic ----------------

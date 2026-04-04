@@ -10,7 +10,17 @@ use crate::{engine::peer_progress::PeerProgress, types::node::NodeId};
 /// term yet" (just booted, or just stepped down from candidate/leader).
 #[derive(Default, Copy, Clone, Debug)]
 pub struct FollowerState {
-    pub leader_id: Option<NodeId>,
+    pub(crate) leader_id: Option<NodeId>,
+}
+
+impl FollowerState {
+    /// The leader this follower last accepted an `AppendEntries` from in
+    /// the current term, if any. `None` when freshly booted or just
+    /// stepped down (no leader trusted yet for the new term).
+    #[must_use]
+    pub fn leader_id(&self) -> Option<NodeId> {
+        self.leader_id
+    }
 }
 
 /// Per-role state the engine carries while in the Candidate role (§5.2).
@@ -22,7 +32,16 @@ pub struct FollowerState {
 pub struct CandidateState {
     /// Node ids that have granted us a vote this term — including self.
     /// Election wins when `votes_granted.len() >= cluster_majority()`.
-    pub votes_granted: BTreeSet<NodeId>,
+    pub(crate) votes_granted: BTreeSet<NodeId>,
+}
+
+impl CandidateState {
+    /// The set of nodes (including self) that have granted us a vote
+    /// this term.
+    #[must_use]
+    pub fn votes_granted(&self) -> &BTreeSet<NodeId> {
+        &self.votes_granted
+    }
 }
 
 /// Per-role state the engine carries while in the Leader role
@@ -35,7 +54,16 @@ pub struct CandidateState {
 #[derive(Default, Clone, Debug)]
 pub struct LeaderState {
     /// Per-peer replication state for every other node in the cluster.
-    pub progress: PeerProgress,
+    pub(crate) progress: PeerProgress,
+}
+
+impl LeaderState {
+    /// Per-peer replication state. Read-only externally — the engine
+    /// owns mutation through the `AppendEntries` response handlers.
+    #[must_use]
+    pub fn progress(&self) -> &PeerProgress {
+        &self.progress
+    }
 }
 
 /// The Raft role. Every node is exactly one of these at any given time.

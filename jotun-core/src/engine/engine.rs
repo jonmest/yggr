@@ -39,28 +39,28 @@ use tracing::instrument;
 ///    election/heartbeat counters) is volatile and reconstructed on
 ///    restart.
 #[derive(Debug)]
-pub struct RaftState<C> {
+pub(crate) struct RaftState<C> {
     /// Highest term we've ever seen. Monotonically non-decreasing (§5.1).
-    pub current_term: Term,
+    pub(crate) current_term: Term,
     /// Candidate this node voted for in `current_term`, if any.
-    pub voted_for: Option<NodeId>,
+    pub(crate) voted_for: Option<NodeId>,
     /// The replicated log itself.
-    pub log: Log<C>,
+    pub(crate) log: Log<C>,
     /// Highest log index known to be committed cluster-wide.
-    pub commit_index: LogIndex,
+    pub(crate) commit_index: LogIndex,
     /// Highest log index applied to the local state machine. Always
     /// `<= commit_index`.
-    pub last_applied: LogIndex,
+    pub(crate) last_applied: LogIndex,
     /// Current role (Follower / Candidate / Leader) and its per-role
     /// bookkeeping.
-    pub role: RoleState,
+    pub(crate) role: RoleState,
     /// Threshold at which the election timer fires, in ticks. Re-rolled
     /// from [`crate::engine::env::Env`] on every reset (§5.2 randomization).
-    pub election_timeout_ticks: u64,
+    pub(crate) election_timeout_ticks: u64,
     /// Ticks elapsed since the last election-timer reset.
-    pub election_elapsed: u64,
+    pub(crate) election_elapsed: u64,
     /// Ticks elapsed since the leader last broadcast `AppendEntries`.
-    pub heartbeat_elapsed: u64,
+    pub(crate) heartbeat_elapsed: u64,
 }
 
 /// The Raft state machine — a single node's complete consensus engine.
@@ -167,24 +167,22 @@ impl<C: Clone> Engine<C> {
         &self.state.log
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn election_elapsed(&self) -> u64 {
+    pub(crate) fn election_elapsed(&self) -> u64 {
         self.state.election_elapsed
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn election_timeout_ticks(&self) -> u64 {
+    pub(crate) fn election_timeout_ticks(&self) -> u64 {
         self.state.election_timeout_ticks
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn heartbeat_elapsed(&self) -> u64 {
+    pub(crate) fn heartbeat_elapsed(&self) -> u64 {
         self.state.heartbeat_elapsed
-    }
-
-    #[must_use]
-    pub fn heartbeat_interval_ticks(&self) -> u64 {
-        self.heartbeat_interval_ticks
     }
 
     /// Number of votes required to win an election in this cluster.

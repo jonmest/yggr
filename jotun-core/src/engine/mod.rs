@@ -7,7 +7,7 @@ pub mod incoming;
 pub mod log;
 pub mod peer_progress;
 pub mod role_state;
-pub mod telemetry;
+pub(crate) mod telemetry;
 
 #[cfg(test)]
 mod tests;

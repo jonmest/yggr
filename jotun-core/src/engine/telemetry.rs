@@ -6,22 +6,15 @@ use crate::types::{node::NodeId, term::Term};
 
 /// tracing target for all engine events. use this with
 /// `target: telemetry::TARGET` so `RUST_LOG=jotun::engine=debug` works.
-pub const TARGET: &str = "jotun::engine";
+pub(crate) const TARGET: &str = "jotun::engine";
 
 /// stable field keys. used with `Span::current().record(...)` where
 /// the macro syntax doesn't accept constants.
-pub mod fields {
-    pub const NODE_ID: &str = "node_id";
-    pub const CANDIDATE: &str = "candidate";
-    pub const PEER: &str = "peer";
-    pub const FROM_TERM: &str = "from_term";
-    pub const TO_TERM: &str = "to_term";
-    pub const DECISION: &str = "decision";
-    pub const REASON: &str = "reason";
-    pub const ROLE: &str = "role";
+pub(crate) mod fields {
+    pub(crate) const DECISION: &str = "decision";
 }
 
-pub fn term_advanced(node_id: NodeId, from: Term, to: Term) {
+pub(crate) fn term_advanced(node_id: NodeId, from: Term, to: Term) {
     tracing::info!(
         target: TARGET,
         node_id = %node_id,
@@ -31,7 +24,7 @@ pub fn term_advanced(node_id: NodeId, from: Term, to: Term) {
     );
 }
 
-pub fn became_follower(node_id: NodeId, term: Term) {
+pub(crate) fn became_follower(node_id: NodeId, term: Term) {
     tracing::info!(
         target: TARGET,
         node_id = %node_id,
@@ -41,7 +34,7 @@ pub fn became_follower(node_id: NodeId, term: Term) {
     );
 }
 
-pub fn became_candidate(node_id: NodeId, term: Term) {
+pub(crate) fn became_candidate(node_id: NodeId, term: Term) {
     tracing::info!(
         target: TARGET,
         node_id = %node_id,
@@ -51,7 +44,7 @@ pub fn became_candidate(node_id: NodeId, term: Term) {
     );
 }
 
-pub fn became_leader(node_id: NodeId, term: Term) {
+pub(crate) fn became_leader(node_id: NodeId, term: Term) {
     tracing::info!(
         target: TARGET,
         node_id = %node_id,
