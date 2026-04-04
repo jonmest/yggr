@@ -130,20 +130,25 @@ pub(super) fn append_entries_from(
     })
 }
 
-/// Assert the actions contain exactly one `Send` of an `AppendEntriesResponse`.
+/// Find the single `Send(AppendEntriesResponse)` in the actions.
+/// Other actions (e.g. `Action::Apply` from a commit advance) are ignored;
+/// tests that care about Apply should pull it via [`collect_apply`].
 pub(super) fn expect_append_entries_response(actions: &[Action<Vec<u8>>]) -> AppendEntriesResponse {
-    assert_eq!(
-        actions.len(),
-        1,
-        "expected exactly one action, got {actions:?}"
-    );
-    match &actions[0] {
+    let mut found = actions.iter().filter_map(|a| match a {
         Action::Send {
-            message: Message::AppendEntriesResponse(response),
+            message: Message::AppendEntriesResponse(r),
             ..
-        } => *response,
-        other => panic!("expected Send(AppendEntriesResponse), got {other:?}"),
-    }
+        } => Some(*r),
+        _ => None,
+    });
+    let response = found
+        .next()
+        .unwrap_or_else(|| panic!("expected one Send(AppendEntriesResponse), got {actions:?}"));
+    assert!(
+        found.next().is_none(),
+        "expected exactly one AppendEntriesResponse, got more in {actions:?}",
+    );
+    response
 }
 
 /// Assert that the actions contain exactly one `Send` of a `VoteResponse`, and

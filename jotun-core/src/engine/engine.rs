@@ -325,7 +325,7 @@ impl<C: Clone> Engine<C> {
         match incoming.message {
             VoteRequest(request) => vec![self.on_vote_request(request)],
             VoteResponse(response) => self.on_vote_response(incoming.from, response),
-            AppendEntriesRequest(request) => vec![self.on_append_entries_request(request)],
+            AppendEntriesRequest(request) => self.on_append_entries_request(request),
             AppendEntriesResponse(response) => {
                 self.on_append_entries_response(incoming.from, response)
             }
@@ -461,7 +461,7 @@ impl<C: Clone> Engine<C> {
             term = %request.term
         )
     )]
-    fn on_append_entries_request(&mut self, request: RequestAppendEntries<C>) -> Action<C> {
+    fn on_append_entries_request(&mut self, request: RequestAppendEntries<C>) -> Vec<Action<C>> {
         if request.term > self.state.current_term
             || (request.term == self.state.current_term
                 && matches!(self.state.role, RoleState::Candidate(_)))
@@ -469,7 +469,7 @@ impl<C: Clone> Engine<C> {
             self.become_follower(request.term);
         }
         if request.term < self.state.current_term {
-            return self.conflict(request.leader_id, LogIndex::ZERO);
+            return vec![self.conflict(request.leader_id, LogIndex::ZERO)];
         }
 
         self.reset_election_timer();
@@ -485,7 +485,7 @@ impl<C: Clone> Engine<C> {
                 .log
                 .last_log_id()
                 .map_or(LogIndex::new(1), |l| l.index.next());
-            return self.conflict(request.leader_id, hint);
+            return vec![self.conflict(request.leader_id, hint)];
         }
 
         for entry in request.entries {
@@ -502,7 +502,7 @@ impl<C: Clone> Engine<C> {
                                 .log
                                 .last_log_id()
                                 .map_or(LogIndex::new(1), |l| l.index.next());
-                            return self.conflict(request.leader_id, hint);
+                            return vec![self.conflict(request.leader_id, hint)];
                         }
                         self.state.log.truncate_from(entry.id.index);
                         self.state.log.append(entry);
@@ -521,7 +521,8 @@ impl<C: Clone> Engine<C> {
             self.state.commit_index = request.leader_commit.min(last_appended);
         }
 
-        Action::Send {
+        let mut out = self.drain_apply();
+        out.push(Action::Send {
             to: request.leader_id,
             message: AppendEntriesResponse(AppendEntriesResponse {
                 term: self.current_term(),
@@ -529,7 +530,8 @@ impl<C: Clone> Engine<C> {
                     last_appended: Some(last_appended),
                 },
             }),
-        }
+        });
+        out
     }
 
     /// Process a peer's `AppendEntries` response (§5.3).

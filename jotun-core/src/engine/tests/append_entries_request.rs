@@ -2,8 +2,8 @@
 use std::collections::BTreeSet;
 
 use super::fixtures::{
-    append_entries_from, append_entries_request, expect_append_entries_response, follower,
-    log_entries, log_id, seed_log, term,
+    append_entries_from, append_entries_request, collect_apply, expect_append_entries_response,
+    follower, log_entries, log_id, seed_log, term,
 };
 use crate::records::append_entries::AppendEntriesResult;
 use crate::types::index::LogIndex;
@@ -284,6 +284,62 @@ fn leader_commit_is_capped_at_last_log_index() {
         LogIndex::new(2),
         "commit capped at our last log index, never ahead of it",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Apply emission — followers feed newly committed entries to the host
+// just like leaders do, via `Action::Apply` (Figure 2: last_applied chases
+// commit_index on every server).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn follower_emits_apply_when_leader_commit_advances_its_commit_index() {
+    let mut engine = follower(1);
+    seed_log(&mut engine, &[1, 1, 1]);
+
+    let actions = engine.step(append_entries_from(
+        2,
+        append_entries_request(1, 2, Some(log_id(3, 1)), vec![], 2),
+    ));
+
+    assert_eq!(engine.commit_index(), LogIndex::new(2));
+    let applied = collect_apply(&actions);
+    assert_eq!(applied.len(), 1, "exactly one Apply per commit advance");
+    assert_eq!(applied[0].len(), 2, "entries 1 and 2 applied");
+    assert_eq!(applied[0][0].id, log_id(1, 1));
+    assert_eq!(applied[0][1].id, log_id(2, 1));
+}
+
+#[test]
+fn follower_does_not_re_apply_already_applied_entries() {
+    // Two heartbeats both carrying leader_commit=2: the second must not
+    // re-emit Apply for entries the host already saw.
+    let mut engine = follower(1);
+    seed_log(&mut engine, &[1, 1, 1]);
+
+    engine.step(append_entries_from(
+        2,
+        append_entries_request(1, 2, Some(log_id(3, 1)), vec![], 2),
+    ));
+    let actions = engine.step(append_entries_from(
+        2,
+        append_entries_request(1, 2, Some(log_id(3, 1)), vec![], 2),
+    ));
+    assert!(collect_apply(&actions).is_empty());
+}
+
+#[test]
+fn follower_emits_no_apply_when_leader_commit_does_not_advance() {
+    // leader_commit <= our commit_index → no movement → no Apply.
+    let mut engine = follower(1);
+    seed_log(&mut engine, &[1, 1, 1]);
+
+    let actions = engine.step(append_entries_from(
+        2,
+        append_entries_request(1, 2, Some(log_id(3, 1)), vec![], 0),
+    ));
+    assert_eq!(engine.commit_index(), LogIndex::ZERO);
+    assert!(collect_apply(&actions).is_empty());
 }
 
 // ---------------------------------------------------------------------------
