@@ -2,6 +2,7 @@ mod append_entries_request;
 mod append_entries_response;
 mod broadcast;
 mod client_proposal;
+mod config_change;
 mod fixtures;
 mod membership;
 mod persistence;

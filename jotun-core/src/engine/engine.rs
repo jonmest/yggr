@@ -537,6 +537,23 @@ impl<C: Clone> Engine<C> {
         }
     }
 
+    /// True iff the log range `(prior_commit, new_commit]` contains a
+    /// `RemovePeer(self)` entry. Used after a commit advance to detect
+    /// "the leader just committed its own removal" — at which point §4.3
+    /// requires it to step down.
+    fn committed_self_removal(&self, prior_commit: LogIndex, new_commit: LogIndex) -> bool {
+        let from = prior_commit.get() + 1;
+        for i in from..=new_commit.get() {
+            if let Some(entry) = self.state.log.entry_at(LogIndex::new(i))
+                && let LogPayload::ConfigChange(ConfigChange::RemovePeer(id)) = entry.payload
+                && id == self.id
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Reset the active peer set to the initial config, then replay every
     /// `ConfigChange` entry currently in the log. Called after a
     /// `Log::truncate_from` that may have rolled back uncommitted
@@ -862,7 +879,22 @@ impl<C: Clone> Engine<C> {
                 if n > self.state.commit_index
                     && self.state.log.term_at(n) == Some(self.state.current_term)
                 {
+                    let prior_commit = self.state.commit_index;
                     self.state.commit_index = n;
+                    // §4.3: a leader that just committed its own removal
+                    // must step down. It cannot lead a cluster it isn't
+                    // a member of.
+                    if self.committed_self_removal(prior_commit, n) {
+                        let prior_term = self.state.current_term;
+                        // become_follower with the same term doesn't
+                        // mutate voted_for (per the same-term preservation
+                        // rule), but it does change role — emit Persist
+                        // for the role-driven side-effect anyway? voted_for
+                        // and term are unchanged, so PersistHardState would
+                        // be a no-op. Skip it; only Apply matters here.
+                        self.become_follower(prior_term);
+                        return self.drain_apply();
+                    }
                     return self.drain_apply();
                 }
                 vec![]
