@@ -6,4 +6,5 @@
 //! scenarios; crate-external users can't.
 
 mod invariants;
+mod proptests;
 mod smoke;
