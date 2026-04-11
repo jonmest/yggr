@@ -7,5 +7,6 @@
 
 mod chaos;
 mod invariants;
+mod membership;
 mod proptests;
 mod smoke;

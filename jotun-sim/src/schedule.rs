@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use jotun_core::NodeId;
+use jotun_core::{ConfigChange, NodeId};
 
 use crate::network::MessageId;
 
@@ -41,4 +41,10 @@ pub(crate) enum Event<C> {
     Partition(BTreeSet<NodeId>),
     /// Heal any current partition.
     Heal,
+    /// Offer a §4.3 single-server membership change to `id`. Followers
+    /// redirect; only leaders append (and only if no other CC is in
+    /// flight). The harness doesn't randomly inject these — the
+    /// scheduler picks them only in scripted scenarios — but they ride
+    /// the same machinery as `Propose` once chosen.
+    ProposeConfigChange(NodeId, ConfigChange),
 }

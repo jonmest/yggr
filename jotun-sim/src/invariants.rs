@@ -64,6 +64,11 @@ pub enum SafetyViolation {
         send_index_in_actions: usize,
         reason: &'static str,
     },
+    /// A node's log holds two or more uncommitted `ConfigChange` entries
+    /// at once. Violates the §4.3 single-server rule (at most one in
+    /// flight); the leader-side append guard exists exactly to prevent
+    /// this.
+    MultipleUncommittedConfigChanges { node: NodeId, indices: Vec<LogIndex> },
 }
 
 /// Running ledger used by the checks that need history across steps.
@@ -101,6 +106,43 @@ impl<C: Clone + PartialEq> SafetyChecker<C> {
         self.observe_applied(nodes)?;
         self.observe_committed(nodes);
         self.check_leader_completeness(nodes)?;
+        Self::check_single_in_flight_config_change(nodes)?;
+        Ok(())
+    }
+
+    /// §4.3 invariant: no node's log contains more than one
+    /// `ConfigChange` past `commit_index`. If this fires, either a
+    /// leader appended a second CC while one was uncommitted, or a
+    /// follower accepted contradictory entries from competing leaders.
+    fn check_single_in_flight_config_change(
+        nodes: &BTreeMap<NodeId, NodeHarness<C>>,
+    ) -> Result<(), SafetyViolation> {
+        use jotun_core::LogPayload;
+        for harness in nodes.values() {
+            let Some(engine) = harness.engine.as_ref() else {
+                continue;
+            };
+            let from = engine.commit_index().get() + 1;
+            let last = engine
+                .log()
+                .last_log_id()
+                .map_or(0, |l| l.index.get());
+            let mut indices: Vec<LogIndex> = Vec::new();
+            for i in from..=last {
+                let idx = LogIndex::new(i);
+                if let Some(entry) = engine.log().entry_at(idx)
+                    && matches!(entry.payload, LogPayload::ConfigChange(_))
+                {
+                    indices.push(idx);
+                }
+            }
+            if indices.len() > 1 {
+                return Err(SafetyViolation::MultipleUncommittedConfigChanges {
+                    node: engine.id(),
+                    indices,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -193,22 +235,25 @@ impl<C: Clone + PartialEq> SafetyChecker<C> {
         &mut self,
         nodes: &BTreeMap<NodeId, NodeHarness<C>>,
     ) -> Result<(), SafetyViolation> {
+        // Index by the entry's own log index, not the position in the
+        // applied vec. The engine filters Noop and ConfigChange entries
+        // out of Apply, so positions are dense but indices are sparse.
         for harness in nodes.values() {
-            for (i, entry) in harness.applied.iter().enumerate() {
-                let idx = LogIndex::new((i as u64) + 1);
+            for entry in &harness.applied {
+                let idx = entry.id.index;
                 match self.applied_by_index.get(&idx) {
                     None => {
                         self.applied_by_index.insert(idx, entry.clone());
                     }
                     Some(seen) if seen.id == entry.id && seen.payload == entry.payload => {}
                     Some(seen) => {
-                        // Find the other node that first applied
-                        // something different at this index; for
-                        // reporting, any other node works.
+                        // Find another node whose applied vec contains
+                        // the differing entry at the same index, for the
+                        // diagnostic message; any matching node works.
                         let other = nodes
                             .iter()
                             .find(|(_, h)| {
-                                h.applied.get(i).is_some_and(|e| {
+                                h.applied.iter().any(|e| {
                                     e.id == seen.id && e.payload == seen.payload
                                 })
                             })

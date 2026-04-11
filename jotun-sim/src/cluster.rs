@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use jotun_core::{Action, Event as CoreEvent, Incoming, NodeId};
+use jotun_core::{Action, ConfigChange, Event as CoreEvent, Incoming, NodeId};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
@@ -176,6 +176,45 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                 self.format_schedule(),
             );
         }
+    }
+
+    /// Inject a single membership change at `id` directly, bypassing the
+    /// random scheduler. The resulting event is recorded in history,
+    /// passes through the safety checker, and otherwise behaves exactly
+    /// like a scheduler-picked `ProposeConfigChange`. Used by scenario
+    /// tests that want to script membership changes deterministically.
+    pub fn propose_config_change_to(&mut self, id: NodeId, change: ConfigChange) {
+        self.clock += 1;
+        let event = Event::ProposeConfigChange(id, change);
+        self.apply_event(event.clone());
+        self.history.push(HistoryEntry {
+            at_clock: self.clock,
+            event,
+        });
+        if let Err(violation) = self.checker.check(&self.nodes) {
+            panic!(
+                "safety violation: {:?}\nschedule so far ({} events):\n{}",
+                violation,
+                self.history.len(),
+                self.format_schedule(),
+            );
+        }
+    }
+
+    /// Add a brand-new node to the cluster harness. Used by scenario tests
+    /// to model an operator bringing up a node and then issuing an
+    /// `AddPeer` config change against the cluster. The new node starts
+    /// with knowledge of every existing node as its peer set; the live
+    /// nodes still need a committed `AddPeer(id)` to start replicating
+    /// to it.
+    pub fn add_node(&mut self, id: NodeId) {
+        if self.nodes.contains_key(&id) {
+            return;
+        }
+        let peers: Vec<NodeId> = self.nodes.keys().copied().collect();
+        let heartbeat = 3_u64;
+        let harness = NodeHarness::new(id, peers, heartbeat, Arc::clone(&self.rng));
+        self.nodes.insert(id, harness);
     }
 
     /// Drive the cluster until `predicate` returns `true` or
@@ -440,6 +479,9 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
             }
             Event::Partition(a_side) => self.network.set_partition(a_side),
             Event::Heal => self.network.heal(),
+            Event::ProposeConfigChange(id, change) => {
+                self.drive_engine(id, CoreEvent::ProposeConfigChange(change));
+            }
         }
     }
 
