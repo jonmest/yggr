@@ -116,6 +116,26 @@ impl PeerProgress {
     pub fn peer_count(&self) -> usize {
         self.next_index.len()
     }
+
+    /// Begin tracking replication progress for a newly-added peer (§4.3
+    /// `AddPeer`). Same initial values as if the peer had been part of the
+    /// cluster when this leader took office: `nextIndex = leader_last + 1`,
+    /// `matchIndex = 0` (we haven't proven the peer has anything yet).
+    /// No-op if the peer is already tracked.
+    pub(crate) fn add_peer(&mut self, peer: NodeId, leader_last_log_index: LogIndex) {
+        self.next_index
+            .entry(peer)
+            .or_insert_with(|| leader_last_log_index.next());
+        self.match_index.entry(peer).or_insert(LogIndex::ZERO);
+    }
+
+    /// Stop tracking a removed peer (§4.3 `RemovePeer`). The peer's
+    /// `matchIndex` is dropped from `majority_index` calculations
+    /// immediately. No-op if the peer wasn't tracked.
+    pub(crate) fn remove_peer(&mut self, peer: NodeId) {
+        self.next_index.remove(&peer);
+        self.match_index.remove(&peer);
+    }
 }
 
 #[cfg(test)]

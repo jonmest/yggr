@@ -12,7 +12,6 @@ use crate::engine::engine::Engine;
 use crate::engine::env::StaticEnv;
 use crate::engine::event::Event;
 use crate::engine::role_state::RoleState;
-use crate::records::log_entry::LogPayload;
 use crate::types::index::LogIndex;
 
 /// Drive a follower → leader of a 3-node cluster (self=1, peers=2,3).
@@ -142,21 +141,21 @@ fn stale_success_does_not_rewind_match_index() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn current_term_entry_commits_on_majority_and_emits_apply() {
+fn current_term_entry_commits_on_majority_but_noop_is_not_in_apply() {
     // 3-node cluster, leader=1. After election the log holds a single noop
-    // at (1, 1). Leader's matchIndex for itself is implicitly 1 (its own
-    // log). One peer ack at index 1 makes matchIndex sorted = [0, 1, 1];
-    // median = 1 → majority_index = 1. Entry 1 is from current_term, so
-    // commit advances 0 → 1 and the noop is applied.
+    // at (1, 1). Leader's matchIndex for itself is implicitly 1. One peer
+    // ack at index 1 makes matchIndex sorted = [0, 1, 1]; median = 1 →
+    // majority_index = 1. Entry 1 is from current_term, so commit advances
+    // 0 → 1. The noop commits — but Apply is filtered to Command entries
+    // only, so the host's state machine never sees it.
     let mut engine = elected_leader_3_node();
     let actions = engine.step(append_entries_success_from(2, 1, 1));
 
     assert_eq!(engine.commit_index(), LogIndex::new(1));
-    let applied = collect_apply(&actions);
-    assert_eq!(applied.len(), 1, "exactly one Apply per commit advance");
-    assert_eq!(applied[0].len(), 1);
-    assert_eq!(applied[0][0].id, log_id(1, 1));
-    assert!(matches!(applied[0][0].payload, LogPayload::Noop));
+    assert!(
+        collect_apply(&actions).is_empty(),
+        "Noop committed but filtered from Apply",
+    );
 }
 
 #[test]
@@ -222,19 +221,19 @@ fn prior_term_entry_does_not_commit_via_majority_alone_until_current_term_entry_
 
     // Now peer 2 acks up to index 3 — the current-term noop. majority_index
     // = 3 (matchIndex sorted = [0, 3, 3]); entry 3 is from current term, so
-    // commit jumps 0 → 3 in one shot, sweeping the prior-term entries with it.
+    // commit jumps 0 → 3 in one shot, sweeping the prior-term Command
+    // entries with it. The noop at index 3 is filtered from Apply.
     let actions = engine.step(append_entries_success_from(2, 5, 3));
     assert_eq!(engine.commit_index(), LogIndex::new(3));
     let applied = collect_apply(&actions);
     assert_eq!(applied.len(), 1);
     assert_eq!(
         applied[0].len(),
-        3,
-        "all three entries apply at once; prior-term ones piggyback on the current-term commit",
+        2,
+        "the two prior-term Command entries apply; the noop at index 3 is filtered",
     );
     assert_eq!(applied[0][0].id, log_id(1, 2));
     assert_eq!(applied[0][1].id, log_id(2, 2));
-    assert_eq!(applied[0][2].id, log_id(3, 5));
 }
 
 // ---------------------------------------------------------------------------

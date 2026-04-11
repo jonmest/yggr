@@ -7,7 +7,7 @@ use crate::engine::telemetry;
 use crate::records::append_entries::{
     AppendEntriesResponse, AppendEntriesResult, RequestAppendEntries,
 };
-use crate::records::log_entry::{LogEntry, LogPayload};
+use crate::records::log_entry::{ConfigChange, LogEntry, LogPayload};
 #[allow(clippy::enum_glob_use)] // match-heavy file; variants are used unqualified throughout
 use crate::records::message::Message::*;
 use crate::records::vote::{RequestVote, VoteResponse, VoteResult};
@@ -61,6 +61,15 @@ pub(crate) struct RaftState<C> {
     pub(crate) election_elapsed: u64,
     /// Ticks elapsed since the leader last broadcast `AppendEntries`.
     pub(crate) heartbeat_elapsed: u64,
+    /// Other nodes in the cluster (self excluded). Mutated by every
+    /// [`crate::records::log_entry::ConfigChange`] entry the moment it
+    /// hits our log, committed or not — that's the §4.3 single-server
+    /// rule that keeps old-and-new majorities overlapping.
+    pub(crate) peers: BTreeSet<NodeId>,
+    /// The peer set the engine was constructed with. Snapshotted so we
+    /// can recompute the active config from scratch after a log truncation
+    /// rolls back uncommitted `ConfigChange` entries.
+    pub(crate) initial_peers: BTreeSet<NodeId>,
 }
 
 /// The Raft state machine — a single node's complete consensus engine.
@@ -77,9 +86,6 @@ pub(crate) struct RaftState<C> {
 pub struct Engine<C> {
     /// This node's id. Stable for the lifetime of the engine.
     id: NodeId,
-    /// Other nodes in the cluster. Self is excluded by the constructor.
-    /// Iteration order is deterministic (`BTreeSet`) for reproducible tests.
-    peers: BTreeSet<NodeId>,
     /// Source of nondeterministic inputs — currently just election
     /// timeout randomization. Boxed for object safety; Send so the
     /// engine can be moved between threads.
@@ -87,7 +93,8 @@ pub struct Engine<C> {
     /// How often the leader emits heartbeats, in ticks. Must be smaller
     /// than the election timeout (§5.2).
     heartbeat_interval_ticks: u64,
-    /// All mutable per-node state.
+    /// All mutable per-node state. Includes the active peer set, which
+    /// the §4.3 single-server membership rule mutates from log entries.
     state: RaftState<C>,
 }
 
@@ -108,12 +115,12 @@ impl<C: Clone> Engine<C> {
         mut env: Box<dyn Env>,
         heartbeat_interval_ticks: u64,
     ) -> Self {
-        let peers = peers.into_iter().filter(|p| *p != id).collect();
+        let peers: BTreeSet<NodeId> = peers.into_iter().filter(|p| *p != id).collect();
+        let initial_peers = peers.clone();
         let election_timeout_ticks = env.next_election_timeout();
 
         Self {
             id,
-            peers,
             env,
             heartbeat_interval_ticks,
             state: RaftState {
@@ -126,6 +133,8 @@ impl<C: Clone> Engine<C> {
                 election_elapsed: 0,
                 heartbeat_elapsed: 0,
                 election_timeout_ticks,
+                peers,
+                initial_peers,
             },
         }
     }
@@ -141,7 +150,7 @@ impl<C: Clone> Engine<C> {
 
     #[must_use]
     pub fn peers(&self) -> &BTreeSet<NodeId> {
-        &self.peers
+        &self.state.peers
     }
 
     pub fn current_term(&self) -> Term {
@@ -189,7 +198,7 @@ impl<C: Clone> Engine<C> {
     /// `cluster_size = peers + self`; majority = `cluster_size / 2 + 1`.
     #[must_use]
     pub fn cluster_majority(&self) -> usize {
-        self.peers.len().div_ceil(2) + 1
+        self.state.peers.len().div_ceil(2) + 1
     }
 
     // =========================================================================
@@ -267,6 +276,7 @@ impl<C: Clone> Engine<C> {
             Event::Tick => self.on_tick(),
             Event::Incoming(incoming) => self.on_incoming(incoming),
             Event::ClientProposal(command) => self.on_client_proposal(command),
+            Event::ProposeConfigChange(change) => self.on_propose_config_change(change),
         };
 
         #[cfg(debug_assertions)]
@@ -337,7 +347,7 @@ impl<C: Clone> Engine<C> {
     /// truth, body fields are advisory.
     #[instrument(target = "jotun::engine", skip_all)]
     fn on_incoming(&mut self, incoming: Incoming<C>) -> Vec<Action<C>> {
-        if !self.peers.contains(&incoming.from) {
+        if !self.state.peers.contains(&incoming.from) {
             return vec![];
         }
         match incoming.message {
@@ -398,6 +408,155 @@ impl<C: Clone> Engine<C> {
         let mut out = vec![Action::PersistLogEntries(vec![entry])];
         out.extend(self.broadcast_append_entries());
         out
+    }
+
+    /// Operator-initiated membership change (§4.3 single-server rule).
+    ///
+    /// Non-leaders: redirect or drop, same shape as [`Self::on_client_proposal`].
+    /// Leaders apply these pre-acceptance checks:
+    ///  - refuse if an uncommitted `ConfigChange` is already in the log
+    ///    (at most one in flight at a time — the §4.3 safety condition);
+    ///  - refuse no-ops (adding an existing member, removing a non-member).
+    ///
+    /// On accept: append a `LogPayload::ConfigChange` entry at
+    /// `(last+1, current_term)`, mutate our own active config
+    /// immediately (pre-commit), persist + broadcast.
+    #[instrument(target = "jotun::engine", skip_all)]
+    fn on_propose_config_change(&mut self, change: ConfigChange) -> Vec<Action<C>> {
+        match &self.state.role {
+            RoleState::Leader(_) => {}
+            RoleState::Follower(f) => {
+                return match f.leader_id {
+                    Some(leader) => vec![Action::Redirect {
+                        leader_hint: leader,
+                    }],
+                    None => vec![],
+                };
+            }
+            RoleState::Candidate(_) => return vec![],
+        }
+
+        // §4.3 safety: at most one uncommitted ConfigChange in the log.
+        if self.has_uncommitted_config_change() {
+            return vec![];
+        }
+        // No-op refusal.
+        if self.is_config_change_noop(change) {
+            return vec![];
+        }
+
+        let next_index = self
+            .state
+            .log
+            .last_log_id()
+            .map_or(LogIndex::new(1), |l| l.index.next());
+        let entry = LogEntry {
+            id: LogId::new(next_index, self.state.current_term),
+            payload: LogPayload::ConfigChange(change),
+        };
+        self.state.log.append(entry.clone());
+        // §4.3: the config change takes effect the instant the entry is
+        // in the log, committed or not.
+        self.apply_config_change(change);
+
+        let mut out = vec![Action::PersistLogEntries(vec![entry])];
+        out.extend(self.broadcast_append_entries());
+        out
+    }
+
+    // =========================================================================
+    // Membership helpers (§4.3)
+    // =========================================================================
+
+    /// True iff any entry past `commit_index` is a `ConfigChange`. A leader
+    /// uses this to enforce "at most one in flight" before accepting a new
+    /// membership proposal.
+    fn has_uncommitted_config_change(&self) -> bool {
+        let from = self.state.commit_index.get() + 1;
+        let last = self
+            .state
+            .log
+            .last_log_id()
+            .map_or(0, |l| l.index.get());
+        for i in from..=last {
+            if let Some(entry) = self.state.log.entry_at(LogIndex::new(i))
+                && matches!(entry.payload, LogPayload::ConfigChange(_))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// True iff `change` would have no effect on the current active config:
+    /// adding a member that's already present, or removing one that isn't.
+    /// Self-add / self-remove are evaluated against the engine's own id.
+    fn is_config_change_noop(&self, change: ConfigChange) -> bool {
+        match change {
+            ConfigChange::AddPeer(id) => id == self.id || self.state.peers.contains(&id),
+            ConfigChange::RemovePeer(id) => id != self.id && !self.state.peers.contains(&id),
+        }
+    }
+
+    /// Mutate the active peer set for one `ConfigChange`. Called once per
+    /// entry appended to the log (leader or follower), and once per entry
+    /// walked during [`Self::recompute_active_config`] after a truncation.
+    ///
+    /// Also keeps the leader's `PeerProgress` in sync: a fresh `AddPeer`
+    /// initialises tracking; `RemovePeer` drops it. Without this the leader
+    /// would either ignore the new peer entirely (no replication) or keep
+    /// computing majority over a peer that no longer exists.
+    ///
+    /// Self-adds and self-removes toggle the engine's *own* membership,
+    /// which the peer set doesn't track (self is always implicit), so
+    /// those are no-ops for the set itself — stepping down on self-removal
+    /// is a separate concern handled at commit time.
+    fn apply_config_change(&mut self, change: ConfigChange) {
+        match change {
+            ConfigChange::AddPeer(id) => {
+                if id != self.id {
+                    self.state.peers.insert(id);
+                    if let RoleState::Leader(l) = &mut self.state.role {
+                        let leader_last = self
+                            .state
+                            .log
+                            .last_log_id()
+                            .map_or(LogIndex::ZERO, |l| l.index);
+                        l.progress.add_peer(id, leader_last);
+                    }
+                }
+            }
+            ConfigChange::RemovePeer(id) => {
+                if id != self.id {
+                    self.state.peers.remove(&id);
+                    if let RoleState::Leader(l) = &mut self.state.role {
+                        l.progress.remove_peer(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reset the active peer set to the initial config, then replay every
+    /// `ConfigChange` entry currently in the log. Called after a
+    /// `Log::truncate_from` that may have rolled back uncommitted
+    /// membership changes — we can't undo individual changes reliably
+    /// (`AddPeer`'s inverse depends on whether the peer was there before),
+    /// so we recompute from scratch.
+    fn recompute_active_config(&mut self) {
+        self.state.peers.clone_from(&self.state.initial_peers);
+        let last = self
+            .state
+            .log
+            .last_log_id()
+            .map_or(0, |l| l.index.get());
+        for i in 1..=last {
+            if let Some(entry) = self.state.log.entry_at(LogIndex::new(i))
+                && let LogPayload::ConfigChange(change) = entry.payload
+            {
+                self.apply_config_change(change);
+            }
+        }
     }
 
     // =========================================================================
@@ -514,7 +673,7 @@ impl<C: Clone> Engine<C> {
             last_log_id: self.state.log.last_log_id(),
         };
 
-        out.extend(self.peers.iter().map(|&peer| Action::Send {
+        out.extend(self.state.peers.iter().map(|&peer| Action::Send {
             to: peer,
             message: VoteRequest(request),
         }));
@@ -581,9 +740,14 @@ impl<C: Clone> Engine<C> {
         }
 
         let mut newly_persisted: Vec<LogEntry<C>> = Vec::new();
+        let mut truncated = false;
         for entry in request.entries {
             match self.state.log.entry_at(entry.id.index) {
                 None => {
+                    // Plain append: incrementally apply any ConfigChange.
+                    if let LogPayload::ConfigChange(change) = entry.payload {
+                        self.apply_config_change(change);
+                    }
                     newly_persisted.push(entry.clone());
                     self.state.log.append(entry);
                 }
@@ -599,11 +763,19 @@ impl<C: Clone> Engine<C> {
                             return out;
                         }
                         self.state.log.truncate_from(entry.id.index);
+                        truncated = true;
                         newly_persisted.push(entry.clone());
                         self.state.log.append(entry);
                     }
                 }
             }
+        }
+        // After a truncate the active config may be stale (rolled-back CC
+        // entries are still in `peers`). Recompute from the post-truncate
+        // log state — covers both the truncate itself and any CC entries
+        // that landed in the same batch.
+        if truncated {
+            self.recompute_active_config();
         }
 
         let last_appended = self
@@ -711,6 +883,11 @@ impl<C: Clone> Engine<C> {
     /// Slice newly-committed-but-not-yet-applied entries out of the log
     /// into an `Action::Apply`, then bump `last_applied` to the new
     /// commit point. Returns an empty vec if there's nothing to apply.
+    ///
+    /// Engine-internal payloads (`Noop`, `ConfigChange`) are filtered
+    /// out — `last_applied` still advances past them, but the host's
+    /// state machine never sees them. Only `Command` entries reach
+    /// the application.
     fn drain_apply(&mut self) -> Vec<Action<C>> {
         let from = LogIndex::new(self.state.last_applied.get() + 1);
         let to = self.state.commit_index;
@@ -719,11 +896,15 @@ impl<C: Clone> Engine<C> {
         }
         let entries: Vec<LogEntry<C>> = (from.get()..=to.get())
             .filter_map(|i| self.state.log.entry_at(LogIndex::new(i)).cloned())
+            .filter(|e| matches!(e.payload, LogPayload::Command(_)))
             .collect();
+        // Always advance last_applied to the commit boundary, even when
+        // every entry in the range was filtered out — Noop/ConfigChange
+        // entries are "applied" the moment they commit, just invisibly.
+        self.state.last_applied = to;
         if entries.is_empty() {
             return vec![];
         }
-        self.state.last_applied = to;
         vec![Action::Apply(entries)]
     }
 
@@ -736,7 +917,7 @@ impl<C: Clone> Engine<C> {
         if !matches!(self.state.role, RoleState::Leader(_)) {
             return vec![];
         }
-        self.peers
+        self.state.peers
             .iter()
             .copied()
             .map(|peer| self.append_entries_to(peer))
@@ -850,7 +1031,7 @@ impl<C: Clone> Engine<C> {
 
         let last_log_index = self.log().last_log_id().map_or(LogIndex::ZERO, |l| l.index);
 
-        let progress = PeerProgress::new(self.peers.iter().copied(), last_log_index);
+        let progress = PeerProgress::new(self.state.peers.iter().copied(), last_log_index);
         self.state.role = RoleState::Leader(LeaderState { progress });
         telemetry::became_leader(self.id, self.state.current_term);
 
