@@ -27,7 +27,7 @@ pub mod transport;
 
 pub use state_machine::{DecodeError, StateMachine};
 pub use storage::{DiskStorage, DiskStorageError, Storage, StoredHardState, StoredSnapshot};
-pub use transport::Transport;
+pub use transport::{TcpTransport, TcpTransportError, Transport};
 
 // Convenience re-exports from jotun-core. Saves users from having to
 // `use jotun_core::...` for the basics; the engine itself stays

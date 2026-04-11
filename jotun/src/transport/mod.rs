@@ -5,10 +5,14 @@
 //! [`Transport::recv`] stream. Implementations own connection
 //! lifecycle, framing, retries, and authentication.
 //!
-//! The default impl ([`crate::transport::TcpTransport`], not yet
-//! built) uses tokio TCP + length-prefixed prost frames. Users who
-//! want gRPC (`tonic`), QUIC (`quinn`), or in-memory testing plug
-//! in their own [`Transport`].
+//! The default impl is [`tcp::TcpTransport`]: tokio TCP +
+//! length-prefixed prost frames. Users who want gRPC (`tonic`),
+//! QUIC (`quinn`), or in-memory testing plug in their own
+//! [`Transport`].
+
+pub mod tcp;
+
+pub use tcp::{TcpTransport, TcpTransportError};
 
 use std::future::Future;
 
