@@ -6,8 +6,7 @@
 
 use super::fixtures::{
     append_entries_conflict_from, append_entries_success_from, collect_append_entries,
-    collect_apply, follower, follower_with_env, log_id, node, seed_log, term,
-    vote_response_from,
+    collect_apply, follower, follower_with_env, log_id, node, seed_log, term, vote_response_from,
 };
 use crate::engine::engine::Engine;
 use crate::engine::env::StaticEnv;
@@ -16,15 +15,29 @@ use crate::engine::role_state::RoleState;
 use crate::records::log_entry::LogPayload;
 use crate::types::index::LogIndex;
 
-/// Drive a fresh follower → leader of a 3-node cluster (self=1, peers=2,3).
-/// After return: term=1, log=[(1,1)=Noop], `commit=0`, `last_applied=0`.
-fn elected_leader_3_node() -> Engine<Vec<u8>> {
+/// Drive a follower → leader of a 3-node cluster (self=1, peers=2,3).
+///
+/// `seed_terms` preloads a non-decreasing prior-term prefix. The election
+/// then runs at `last(seed_terms) + 1`, so the returned leader always ends
+/// with a current-term no-op after any seeded prior-term entries.
+fn elected_leader_3_node_with_seed(seed_terms: &[u64]) -> Engine<Vec<u8>> {
     let env = StaticEnv(1);
     let mut engine = follower_with_env(1, &[2, 3], Box::new(env));
-    engine.step(Event::Tick); // → Candidate, term 1
-    engine.step(vote_response_from(2, 1, true)); // peer 2 grants → Leader
+    if !seed_terms.is_empty() {
+        seed_log(&mut engine, seed_terms);
+    }
+    let pre_election_term = seed_terms.last().copied().unwrap_or(0);
+    engine.state_mut().current_term = term(pre_election_term);
+    let election_term = pre_election_term + 1;
+    engine.step(Event::Tick); // → Candidate
+    engine.step(vote_response_from(2, election_term, true)); // peer 2 grants → Leader
     assert!(matches!(engine.role(), RoleState::Leader(_)));
     engine
+}
+
+/// Fresh 3-node leader with only its election no-op in the log.
+fn elected_leader_3_node() -> Engine<Vec<u8>> {
+    elected_leader_3_node_with_seed(&[])
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +55,11 @@ fn higher_term_response_demotes_leader_to_follower() {
     // Step-down to higher term advances current_term and clears voted_for —
     // both persistent. Engine must emit a single PersistHardState and no
     // network sends.
-    assert_eq!(actions.len(), 1, "expected only PersistHardState, got {actions:?}");
+    assert_eq!(
+        actions.len(),
+        1,
+        "expected only PersistHardState, got {actions:?}"
+    );
     assert!(matches!(
         actions[0],
         crate::engine::action::Action::PersistHardState { .. }
@@ -357,13 +374,47 @@ enum Reply {
 }
 
 fn reply_strategy() -> impl Strategy<Value = Reply> {
+    reply_strategy_for_log(1)
+}
+
+fn reply_strategy_for_log(max_index: u64) -> impl Strategy<Value = Reply> {
+    let prior_boundary = max_index.saturating_sub(1);
+    let max_or_bogus = max_index.saturating_add(2);
+    let success_index = prop_oneof![
+        Just(0),
+        Just(prior_boundary),
+        Just(max_index),
+        Just(max_or_bogus),
+        0u64..=max_or_bogus,
+    ];
+    let conflict_hint = prop_oneof![
+        Just(1),
+        Just(prior_boundary.max(1)),
+        Just(max_index),
+        Just(max_or_bogus),
+        1u64..=max_or_bogus,
+    ];
     prop_oneof![
-        (1u64..=3, 0u64..=10).prop_map(|(peer, last)| Reply::Success {
+        (2u64..=3, success_index).prop_map(|(peer, last)| Reply::Success {
             peer,
             last_appended: last,
         }),
-        (1u64..=3, 1u64..=10).prop_map(|(peer, hint)| Reply::Conflict { peer, hint }),
+        (2u64..=3, conflict_hint).prop_map(|(peer, hint)| Reply::Conflict { peer, hint }),
     ]
+}
+
+fn prior_term_leader_session_strategy() -> impl Strategy<Value = (Vec<u64>, Vec<Reply>)> {
+    proptest::collection::vec(1u64..=5, 1..6)
+        .prop_map(|mut seed_terms| {
+            seed_terms.sort_unstable();
+            seed_terms
+        })
+        .prop_flat_map(|seed_terms| {
+            let max_index =
+                u64::try_from(seed_terms.len()).expect("seed_terms length fits in u64") + 1;
+            let replies = proptest::collection::vec(reply_strategy_for_log(max_index), 0..30);
+            (Just(seed_terms), replies)
+        })
 }
 
 proptest! {
@@ -470,9 +521,9 @@ proptest! {
     /// itself is always a current-term entry.)
     #[test]
     fn commit_advances_only_to_current_term_entries(
-        replies in proptest::collection::vec(reply_strategy(), 0..30),
+        (seed_terms, replies) in prior_term_leader_session_strategy(),
     ) {
-        let mut engine = elected_leader_3_node();
+        let mut engine = elected_leader_3_node_with_seed(&seed_terms);
         let mut prev_commit = engine.commit_index();
         for r in replies {
             match r {
@@ -504,4 +555,3 @@ proptest! {
         }
     }
 }
-
