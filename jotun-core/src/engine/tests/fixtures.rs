@@ -22,13 +22,15 @@ pub(super) const DEFAULT_ELECTION_TIMEOUT: u64 = 10;
 /// per §5.2.
 pub(super) const DEFAULT_HEARTBEAT_INTERVAL: u64 = 1;
 
-/// A fresh follower with no peers: term 0, empty log, no prior vote.
-/// Suitable for receive-side tests that don't need peer broadcast.
-/// Commands are `Vec<u8>` so tests don't have to juggle a command type.
+/// A fresh follower in a 3-node cluster (self + peers 2 and 3): term 0,
+/// empty log, no prior vote. Receive-side tests use this when they don't
+/// care about specific peer composition; just enough peers to satisfy the
+/// `on_incoming` membership check.
 pub(super) fn follower(id: u64) -> Engine<Vec<u8>> {
+    let peers: Vec<NodeId> = [2u64, 3].into_iter().filter(|&p| p != id).map(node).collect();
     Engine::new(
         node(id),
-        std::iter::empty(),
+        peers,
         Box::new(StaticEnv(DEFAULT_ELECTION_TIMEOUT)),
         DEFAULT_HEARTBEAT_INTERVAL,
     )

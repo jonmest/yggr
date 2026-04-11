@@ -145,8 +145,8 @@ fn late_response_after_becoming_leader_is_ignored() {
 fn late_response_after_becoming_follower_is_ignored() {
     let mut engine = candidate_in_cluster(1, &[2, 3, 4, 5]);
 
-    // Get knocked back to follower by a higher-term message.
-    engine.step(vote_response_from(99, 5, false));
+    // Get knocked back to follower by a higher-term message from a peer.
+    engine.step(vote_response_from(5, 5, false));
     assert!(matches!(engine.role(), RoleState::Follower(_)));
 
     // A grant from the old term arrives late.

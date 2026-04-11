@@ -3,6 +3,7 @@ mod append_entries_response;
 mod broadcast;
 mod client_proposal;
 mod fixtures;
+mod membership;
 mod persistence;
 mod tick;
 mod vote_request;

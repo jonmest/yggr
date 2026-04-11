@@ -16,8 +16,17 @@ pub enum Event<C> {
     Tick,
     /// A peer sent us an RPC.
     Incoming(Incoming<C>),
-    /// The local application is asking the leader to replicate a command.
-    /// On non-leaders this is where the host would redirect to the
-    /// current leader (engine currently no-ops).
+    /// The local application is asking us to replicate a command.
+    ///
+    /// Behaviour by role:
+    ///  - **Leader**: appends at `(last+1, current_term)`, emits
+    ///    [`crate::engine::action::Action::PersistLogEntries`] and
+    ///    broadcasts `AppendEntries` to all peers immediately.
+    ///  - **Follower** with a known leader (set by the most recent
+    ///    accepted `AppendEntries`): emits
+    ///    [`crate::engine::action::Action::Redirect`] so the host can
+    ///    forward the client.
+    ///  - **Follower** without a known leader, or **Candidate**: drops
+    ///    silently. The host should retry on its own cadence.
     ClientProposal(C),
 }

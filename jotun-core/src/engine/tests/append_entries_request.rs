@@ -513,7 +513,7 @@ proptest! {
     /// Covers the case where a message is duplicated on the network.
     #[test]
         fn identical_request_is_idempotent(
-        leader in 2u64..10,
+        leader in 2u64..=3,
         term_n in 1u64..10,
         commit in 0u64..5,
     ) {
@@ -604,7 +604,7 @@ proptest! {
     /// after any catch-up. Mirrors the vote-handler property.
     #[test]
         fn response_term_is_always_responders_current_term(
-        leader in 2u64..10,
+        leader in 2u64..=3,
         term_n in 0u64..20,
     ) {
         let mut engine = follower(1);

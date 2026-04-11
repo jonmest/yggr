@@ -325,12 +325,35 @@ impl<C: Clone> Engine<C> {
     }
 
     /// A peer's RPC arrived. Demultiplex by message type.
+    ///
+    /// Drops messages from any node that isn't a configured peer. The
+    /// host transport authenticated `incoming.from`; we additionally
+    /// require that sender to be a cluster member, so a stray
+    /// `VoteResponse` from a non-member can't be counted toward
+    /// `votes_granted` and stray `AppendEntriesResponse` from non-members
+    /// can't poison `matchIndex`. For the request variants we also
+    /// require the body-level id (`candidate_id` / `leader_id`) to
+    /// equal `from` — the wire-authenticated identity is the source of
+    /// truth, body fields are advisory.
     #[instrument(target = "jotun::engine", skip_all)]
     fn on_incoming(&mut self, incoming: Incoming<C>) -> Vec<Action<C>> {
+        if !self.peers.contains(&incoming.from) {
+            return vec![];
+        }
         match incoming.message {
-            VoteRequest(request) => self.on_vote_request(request),
+            VoteRequest(request) => {
+                if request.candidate_id != incoming.from {
+                    return vec![];
+                }
+                self.on_vote_request(request)
+            }
             VoteResponse(response) => self.on_vote_response(incoming.from, response),
-            AppendEntriesRequest(request) => self.on_append_entries_request(request),
+            AppendEntriesRequest(request) => {
+                if request.leader_id != incoming.from {
+                    return vec![];
+                }
+                self.on_append_entries_request(request)
+            }
             AppendEntriesResponse(response) => {
                 self.on_append_entries_response(incoming.from, response)
             }

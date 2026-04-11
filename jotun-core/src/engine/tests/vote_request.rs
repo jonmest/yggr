@@ -142,7 +142,7 @@ fn granting_a_vote_draws_a_new_timeout_from_env() {
     use crate::engine::env::ScriptedEnv;
     // Construction consumes the first value; the grant reset draws the next.
     let env = ScriptedEnv::new(vec![10, 42]);
-    let mut engine = super::fixtures::follower_with_env(1, &[], Box::new(env));
+    let mut engine = super::fixtures::follower_with_env(1, &[2], Box::new(env));
     assert_eq!(engine.election_timeout_ticks(), 10);
 
     // Fresh follower grants a higher-term vote. Term catch-up on its own does
@@ -229,9 +229,11 @@ fn follower_grants_when_candidate_log_term_is_strictly_greater() {
 // Invariants (property tests)
 // ---------------------------------------------------------------------------
 
-/// Arbitrary `RequestVote` where the candidate id is never 1 (our test node's id).
+/// Arbitrary `RequestVote` from a configured peer of `follower(1)`,
+/// which has peers {2, 3}. Sending from non-members is now dropped at
+/// the engine boundary and would just yield empty action vecs.
 fn any_vote_request() -> impl Strategy<Value = (u64, crate::records::vote::RequestVote)> {
-    let candidate = 2u64..10;
+    let candidate = 2u64..=3;
     let term_n = 0u64..20;
     let last_log = proptest::option::of((1u64..20, 0u64..20));
     (candidate, term_n, last_log).prop_map(|(c, t, last)| {
@@ -245,7 +247,7 @@ proptest! {
     /// in a given term.
     #[test]
     fn never_votes_for_two_different_candidates_in_the_same_term(
-        candidates in proptest::collection::vec(2u64..10, 1..20),
+        candidates in proptest::collection::vec(2u64..=3, 1..20),
     ) {
         let mut engine = follower(1);
         let mut recorded: Option<u64> = None;
