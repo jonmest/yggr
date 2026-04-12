@@ -21,10 +21,12 @@
     allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing,)
 )]
 
+pub mod node;
 pub mod state_machine;
 pub mod storage;
 pub mod transport;
 
+pub use node::{Config, Node, NodeStartError, ProposeError};
 pub use state_machine::{DecodeError, StateMachine};
 pub use storage::{DiskStorage, DiskStorageError, Storage, StoredHardState, StoredSnapshot};
 pub use transport::{TcpTransport, TcpTransportError, Transport};

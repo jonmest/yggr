@@ -427,6 +427,10 @@ impl<C: Clone> Engine<C> {
 
         let mut out = vec![Action::PersistLogEntries(vec![entry])];
         out.extend(self.broadcast_append_entries());
+        // Single-node clusters won't get a peer ack to drive commit;
+        // try advancing now so propose can complete locally. No-op
+        // when peers exist (their matchIndex is still < the new entry).
+        out.extend(self.try_advance_commit_as_leader());
         out
     }
 
@@ -481,6 +485,7 @@ impl<C: Clone> Engine<C> {
 
         let mut out = vec![Action::PersistLogEntries(vec![entry])];
         out.extend(self.broadcast_append_entries());
+        out.extend(self.try_advance_commit_as_leader());
         out
     }
 
@@ -945,34 +950,7 @@ impl<C: Clone> Engine<C> {
                     return vec![];
                 }
                 leader.progress.record_success(peer, last_appended);
-
-                let RoleState::Leader(leader) = &self.state.role else {
-                    unreachable!("we just confirmed Leader above");
-                };
-                let n = leader.progress.majority_index(leader_last);
-
-                if n > self.state.commit_index
-                    && self.state.log.term_at(n) == Some(self.state.current_term)
-                {
-                    let prior_commit = self.state.commit_index;
-                    self.state.commit_index = n;
-                    // §4.3: a leader that just committed its own removal
-                    // must step down. It cannot lead a cluster it isn't
-                    // a member of.
-                    if self.committed_self_removal(prior_commit, n) {
-                        let prior_term = self.state.current_term;
-                        // become_follower with the same term doesn't
-                        // mutate voted_for (per the same-term preservation
-                        // rule), but it does change role — emit Persist
-                        // for the role-driven side-effect anyway? voted_for
-                        // and term are unchanged, so PersistHardState would
-                        // be a no-op. Skip it; only Apply matters here.
-                        self.become_follower(prior_term);
-                        return self.drain_apply();
-                    }
-                    return self.drain_apply();
-                }
-                vec![]
+                self.try_advance_commit_as_leader()
             }
             AppendEntriesResult::Conflict { next_index_hint } => {
                 // Clamp the hint to our own log: nextIndex must never point
@@ -1136,6 +1114,45 @@ impl<C: Clone> Engine<C> {
         leader
             .progress
             .ensure_next_at_least(peer, snapshot_floor.next());
+        vec![]
+    }
+
+    /// Run the §5.3 commit-advance check from a leader's perspective.
+    /// `majority_index` across (peer `matchIndex`, leader's own
+    /// `last_log_id`) — if past `commit_index` AND the entry at that
+    /// index is from `current_term` (§5.4.2), advance commit, drain
+    /// `Apply`, and step down on self-removal. Idempotent.
+    ///
+    /// Single-node clusters need this called proactively after every
+    /// leader-side append: there are no peers to ack, so the only
+    /// commit driver is the leader's own append moving `leader_last`
+    /// past the prior commit point.
+    fn try_advance_commit_as_leader(&mut self) -> Vec<Action<C>> {
+        if !matches!(self.state.role, RoleState::Leader(_)) {
+            return vec![];
+        }
+        let leader_last = self
+            .state
+            .log
+            .last_log_id()
+            .map_or(LogIndex::ZERO, |l| l.index);
+        let RoleState::Leader(leader) = &self.state.role else {
+            unreachable!("just matched");
+        };
+        let n = leader.progress.majority_index(leader_last);
+        if n > self.state.commit_index
+            && self.state.log.term_at(n) == Some(self.state.current_term)
+        {
+            let prior_commit = self.state.commit_index;
+            self.state.commit_index = n;
+            if self.committed_self_removal(prior_commit, n) {
+                let prior_term = self.state.current_term;
+                // Same-term step-down preserves voted_for; no Persist
+                // needed beyond what drain_apply might emit.
+                self.become_follower(prior_term);
+            }
+            return self.drain_apply();
+        }
         vec![]
     }
 
@@ -1339,6 +1356,9 @@ impl<C: Clone> Engine<C> {
         // the initial broadcast.
         let mut out = vec![Action::PersistLogEntries(vec![noop])];
         out.extend(self.broadcast_append_entries());
+        // Single-node clusters: no peers to ack, so the noop's commit
+        // has to be driven from the leader's own appended state.
+        out.extend(self.try_advance_commit_as_leader());
         out
     }
 
