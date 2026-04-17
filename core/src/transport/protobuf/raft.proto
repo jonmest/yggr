@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package logos.raft.v1;
+
+message LogId {
+  uint64 index = 1;
+  uint64 term = 2;
+}
+
+message LogEntry {
+  LogId id = 1;
+  bytes command = 2;
+}
+
+message RequestVote {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  LogId last_log_id = 3;
+}
+
+message VoteResponse {
+  uint64 term = 1;
+  VoteResult result = 2;
+}
+
+enum VoteResult {
+  VOTE_RESULT_UNSPECIFIED = 0;
+  VOTE_RESULT_GRANTED = 1;
+  VOTE_RESULT_REJECTED = 2;
+}
+
+message RequestAppendEntries {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  LogId prev_log_id = 3;
+  repeated LogEntry entries = 4;
+  uint64 leader_commit = 5;
+}
+
+message AppendEntriesResponse {
+  uint64 term = 1;
+  oneof result {
+    AppendSuccess success = 2;
+    AppendConflict conflict = 3;
+  }
+}
+
+message AppendSuccess {
+  // Absent when no entries have been appended yet.
+  optional uint64 last_appended = 1;
+}
+
+message AppendConflict {
+  uint64 next_index_hint = 1;
+}
+
+message Message {
+  oneof kind {
+    RequestVote vote_request = 1;
+    VoteResponse vote_response = 2;
+    RequestAppendEntries append_entries_request = 3;
+    AppendEntriesResponse append_entries_response = 4;
+  }
+}
