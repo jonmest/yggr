@@ -44,10 +44,8 @@ async fn vote_request_round_trips_over_tcp() {
     let mut peers_b = BTreeMap::new();
     peers_b.insert(nid(1), addr_a);
 
-    let a: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr_a, peers_a).await.unwrap();
-    let mut b: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(2), addr_b, peers_b).await.unwrap();
+    let a: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr_a, peers_a).await.unwrap();
+    let mut b: TcpTransport<Vec<u8>> = TcpTransport::start(nid(2), addr_b, peers_b).await.unwrap();
 
     // Give the dialer tasks a moment to connect.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -87,10 +85,8 @@ async fn vote_response_round_trips_over_tcp() {
     let mut peers_b = BTreeMap::new();
     peers_b.insert(nid(1), addr_a);
 
-    let mut a: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr_a, peers_a).await.unwrap();
-    let b: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(2), addr_b, peers_b).await.unwrap();
+    let mut a: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr_a, peers_a).await.unwrap();
+    let b: TcpTransport<Vec<u8>> = TcpTransport::start(nid(2), addr_b, peers_b).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -127,10 +123,8 @@ async fn many_messages_arrive_in_order() {
     let mut peers_b = BTreeMap::new();
     peers_b.insert(nid(1), addr_a);
 
-    let a: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr_a, peers_a).await.unwrap();
-    let mut b: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(2), addr_b, peers_b).await.unwrap();
+    let a: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr_a, peers_a).await.unwrap();
+    let mut b: TcpTransport<Vec<u8>> = TcpTransport::start(nid(2), addr_b, peers_b).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -158,13 +152,17 @@ async fn many_messages_arrive_in_order() {
 async fn send_to_unknown_peer_returns_error() {
     let port_a = free_port();
     let addr_a: SocketAddr = (Ipv4Addr::LOCALHOST, port_a).into();
-    let a: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr_a, BTreeMap::new()).await.unwrap();
+    let a: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr_a, BTreeMap::new())
+        .await
+        .unwrap();
     let req = RequestVote {
         term: Term::new(1),
         candidate_id: nid(1),
         last_log_id: None,
     };
-    let err = a.send(nid(99), Message::VoteRequest(req)).await.unwrap_err();
+    let err = a
+        .send(nid(99), Message::VoteRequest(req))
+        .await
+        .unwrap_err();
     assert!(format!("{err}").contains("unknown peer"));
 }

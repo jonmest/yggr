@@ -23,7 +23,10 @@ impl TryFrom<proto::ConfigChange> for ConfigChange {
 
     fn try_from(v: proto::ConfigChange) -> Result<Self, Self::Error> {
         use proto::config_change::Kind;
-        match v.kind.ok_or(ConvertError::MissingField("ConfigChange.kind"))? {
+        match v
+            .kind
+            .ok_or(ConvertError::MissingField("ConfigChange.kind"))?
+        {
             Kind::AddPeer(r) => Ok(ConfigChange::AddPeer(
                 NodeId::new(r.id).ok_or(ConvertError::ZeroNodeId)?,
             )),
@@ -58,9 +61,7 @@ impl<C: From<Vec<u8>>> TryFrom<proto::LogEntry> for LogEntry<C> {
         {
             proto::log_entry::Payload::Noop(_) => LogPayload::Noop,
             proto::log_entry::Payload::Command(b) => LogPayload::Command(C::from(b)),
-            proto::log_entry::Payload::ConfigChange(cc) => {
-                LogPayload::ConfigChange(cc.try_into()?)
-            }
+            proto::log_entry::Payload::ConfigChange(cc) => LogPayload::ConfigChange(cc.try_into()?),
         };
         Ok(Self {
             id: v

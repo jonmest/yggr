@@ -25,7 +25,9 @@ impl TryFrom<proto::RequestInstallSnapshot> for RequestInstallSnapshot {
             leader_id: NodeId::new(v.leader_id).ok_or(ConvertError::ZeroNodeId)?,
             last_included: v
                 .last_included
-                .ok_or(ConvertError::MissingField("RequestInstallSnapshot.last_included"))?
+                .ok_or(ConvertError::MissingField(
+                    "RequestInstallSnapshot.last_included",
+                ))?
                 .try_into()?,
             data: v.data,
             leader_commit: LogIndex::new(v.leader_commit),

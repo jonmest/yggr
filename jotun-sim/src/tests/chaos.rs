@@ -71,10 +71,14 @@ fn crash_and_recover_preserves_liveness() {
     // Phase 2: crash + recover a follower, then drive further.
     // Pick a non-leader so the leader stays up.
     let leader = cluster.leaders().into_iter().next().expect("leader");
-    let target = [NodeId::new(1).unwrap(), NodeId::new(2).unwrap(), NodeId::new(3).unwrap()]
-        .into_iter()
-        .find(|n| *n != leader)
-        .expect("non-leader exists");
+    let target = [
+        NodeId::new(1).unwrap(),
+        NodeId::new(2).unwrap(),
+        NodeId::new(3).unwrap(),
+    ]
+    .into_iter()
+    .find(|n| *n != leader)
+    .expect("non-leader exists");
     cluster.crash_for_test(target);
     for _ in 0..20 {
         cluster.step();

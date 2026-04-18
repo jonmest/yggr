@@ -52,12 +52,7 @@ impl<C: Clone> Network<C> {
         Self::default()
     }
 
-    pub(crate) fn enqueue(
-        &mut self,
-        from: NodeId,
-        to: NodeId,
-        message: Message<C>,
-    ) -> MessageId {
+    pub(crate) fn enqueue(&mut self, from: NodeId, to: NodeId, message: Message<C>) -> MessageId {
         let id = MessageId(self.next_id);
         self.next_id += 1;
         self.queue.push_back(InFlight {

@@ -52,7 +52,9 @@ fn entry(index: u64, term: u64, cmd: &[u8]) -> LogEntry<Vec<u8>> {
 async fn fresh_recovery_returns_default_empty() {
     let tmp = TmpDir::new();
     let mut s: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
-    let r = <DiskStorage as Storage<Vec<u8>>>::recover(&mut s).await.unwrap();
+    let r = <DiskStorage as Storage<Vec<u8>>>::recover(&mut s)
+        .await
+        .unwrap();
     assert!(r.hard_state.is_none());
     assert!(r.snapshot.is_none());
     assert!(r.log.is_empty());
@@ -75,7 +77,9 @@ async fn hard_state_round_trips() {
     // Re-open from disk to prove durability.
     drop(s);
     let mut s2: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
-    let r = <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2).await.unwrap();
+    let r = <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2)
+        .await
+        .unwrap();
     assert_eq!(
         r.hard_state,
         Some(StoredHardState {
@@ -98,7 +102,9 @@ async fn hard_state_with_no_vote_round_trips() {
     )
     .await
     .unwrap();
-    let r = <DiskStorage as Storage<Vec<u8>>>::recover(&mut s).await.unwrap();
+    let r = <DiskStorage as Storage<Vec<u8>>>::recover(&mut s)
+        .await
+        .unwrap();
     assert_eq!(
         r.hard_state,
         Some(StoredHardState {
@@ -113,12 +119,16 @@ async fn log_append_and_recover() {
     let tmp = TmpDir::new();
     let mut s: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
     let entries = vec![entry(1, 1, b"a"), entry(2, 1, b"bb"), entry(3, 1, b"ccc")];
-    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s,entries.clone()).await.unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s, entries.clone())
+        .await
+        .unwrap();
 
     drop(s);
     let mut s2: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
     let r: jotun::storage::RecoveredState<Vec<u8>> =
-        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2).await.unwrap();
+        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2)
+            .await
+            .unwrap();
     assert_eq!(r.log, entries);
 }
 
@@ -132,11 +142,17 @@ async fn log_truncate_drops_tail() {
         entry(3, 1, b"c"),
         entry(4, 1, b"d"),
     ];
-    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s,entries.clone()).await.unwrap();
-    <DiskStorage as Storage<Vec<u8>>>::truncate_log(&mut s,LogIndex::new(3)).await.unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s, entries.clone())
+        .await
+        .unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::truncate_log(&mut s, LogIndex::new(3))
+        .await
+        .unwrap();
 
     let r: jotun::storage::RecoveredState<Vec<u8>> =
-        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s).await.unwrap();
+        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s)
+            .await
+            .unwrap();
     assert_eq!(r.log, entries[..2].to_vec());
 }
 
@@ -150,19 +166,26 @@ async fn snapshot_replaces_log_prefix() {
         entry(3, 1, b"c"),
         entry(4, 1, b"d"),
     ];
-    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s,entries.clone()).await.unwrap();
-    <DiskStorage as Storage<Vec<u8>>>::persist_snapshot(&mut s,StoredSnapshot {
-        last_included_index: LogIndex::new(2),
-        last_included_term: Term::new(1),
-        bytes: b"snapshot-bytes".to_vec(),
-    })
+    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s, entries.clone())
+        .await
+        .unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::persist_snapshot(
+        &mut s,
+        StoredSnapshot {
+            last_included_index: LogIndex::new(2),
+            last_included_term: Term::new(1),
+            bytes: b"snapshot-bytes".to_vec(),
+        },
+    )
     .await
     .unwrap();
 
     drop(s);
     let mut s2: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
     let r: jotun::storage::RecoveredState<Vec<u8>> =
-        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2).await.unwrap();
+        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2)
+            .await
+            .unwrap();
 
     let snap = r.snapshot.expect("snapshot must be recovered");
     assert_eq!(snap.last_included_index, LogIndex::new(2));
@@ -176,22 +199,32 @@ async fn snapshot_replaces_log_prefix() {
 async fn appends_after_snapshot_use_correct_indices() {
     let tmp = TmpDir::new();
     let mut s: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
-    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s,vec![entry(1, 1, b"a"), entry(2, 1, b"b")])
-        .await
-        .unwrap();
-    <DiskStorage as Storage<Vec<u8>>>::persist_snapshot(&mut s,StoredSnapshot {
-        last_included_index: LogIndex::new(2),
-        last_included_term: Term::new(1),
-        bytes: b"snap".to_vec(),
-    })
+    <DiskStorage as Storage<Vec<u8>>>::append_log(
+        &mut s,
+        vec![entry(1, 1, b"a"), entry(2, 1, b"b")],
+    )
+    .await
+    .unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::persist_snapshot(
+        &mut s,
+        StoredSnapshot {
+            last_included_index: LogIndex::new(2),
+            last_included_term: Term::new(1),
+            bytes: b"snap".to_vec(),
+        },
+    )
     .await
     .unwrap();
     // New entry at index 3 (above the floor).
-    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s,vec![entry(3, 1, b"c")]).await.unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s, vec![entry(3, 1, b"c")])
+        .await
+        .unwrap();
 
     drop(s);
     let mut s2: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
     let r: jotun::storage::RecoveredState<Vec<u8>> =
-        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2).await.unwrap();
+        <DiskStorage as Storage<Vec<u8>>>::recover(&mut s2)
+            .await
+            .unwrap();
     assert_eq!(r.log, vec![entry(3, 1, b"c")]);
 }

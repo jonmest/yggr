@@ -50,15 +50,21 @@ impl StateMachine for Kv {
         let tag = parts.next().ok_or_else(|| DecodeError::new("empty"))?;
         match tag {
             "S" => {
-                let key = parts.next().ok_or_else(|| DecodeError::new("missing key"))?;
-                let value = parts.next().ok_or_else(|| DecodeError::new("missing value"))?;
+                let key = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing key"))?;
+                let value = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing value"))?;
                 Ok(KvCmd::Set {
                     key: key.into(),
                     value: value.into(),
                 })
             }
             "D" => {
-                let key = parts.next().ok_or_else(|| DecodeError::new("missing key"))?;
+                let key = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing key"))?;
                 Ok(KvCmd::Delete { key: key.into() })
             }
             other => Err(DecodeError::new(format!("unknown tag: {other}"))),
@@ -93,12 +99,24 @@ fn state_machine_decode_error_is_propagated() {
 #[test]
 fn state_machine_apply_returns_previous_value_for_set() {
     let mut kv = Kv::default();
-    assert_eq!(kv.apply(KvCmd::Set { key: "k".into(), value: "v1".into() }), None);
     assert_eq!(
-        kv.apply(KvCmd::Set { key: "k".into(), value: "v2".into() }),
+        kv.apply(KvCmd::Set {
+            key: "k".into(),
+            value: "v1".into()
+        }),
+        None
+    );
+    assert_eq!(
+        kv.apply(KvCmd::Set {
+            key: "k".into(),
+            value: "v2".into()
+        }),
         Some("v1".into()),
     );
-    assert_eq!(kv.apply(KvCmd::Delete { key: "k".into() }), Some("v2".into()));
+    assert_eq!(
+        kv.apply(KvCmd::Delete { key: "k".into() }),
+        Some("v2".into())
+    );
     assert_eq!(kv.apply(KvCmd::Delete { key: "k".into() }), None);
 }
 
@@ -138,7 +156,10 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
     async fn append_log(&mut self, entries: Vec<LogEntry<C>>) -> Result<(), Self::Error> {
         for entry in entries {
             let i = entry.id.index.get();
-            let snap_floor = self.snapshot.as_ref().map_or(0, |s| s.last_included_index.get());
+            let snap_floor = self
+                .snapshot
+                .as_ref()
+                .map_or(0, |s| s.last_included_index.get());
             if i <= snap_floor {
                 continue;
             }
@@ -153,7 +174,10 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
     }
 
     async fn truncate_log(&mut self, from: LogIndex) -> Result<(), Self::Error> {
-        let snap_floor = self.snapshot.as_ref().map_or(0, |s| s.last_included_index.get());
+        let snap_floor = self
+            .snapshot
+            .as_ref()
+            .map_or(0, |s| s.last_included_index.get());
         let local = from.get().saturating_sub(snap_floor + 1) as usize;
         if local < self.log.len() {
             self.log.truncate(local);
@@ -215,7 +239,10 @@ async fn memory_storage_round_trips_log_with_snapshot_floor() {
     .unwrap();
 
     let r = s.recover().await.unwrap();
-    assert_eq!(r.snapshot.as_ref().unwrap().last_included_index, LogIndex::new(3));
+    assert_eq!(
+        r.snapshot.as_ref().unwrap().last_included_index,
+        LogIndex::new(3)
+    );
     assert_eq!(r.log.len(), 2);
     assert_eq!(r.log[0].id.index, LogIndex::new(4));
     assert_eq!(r.log[1].id.index, LogIndex::new(5));

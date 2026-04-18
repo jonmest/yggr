@@ -47,9 +47,16 @@ impl RandomizedEnv {
     /// Panics if `min >= max`.
     #[must_use]
     pub fn new(seed: u64, min: u64, max: u64) -> Self {
-        assert!(min < max, "RandomizedEnv: min must be strictly less than max");
+        assert!(
+            min < max,
+            "RandomizedEnv: min must be strictly less than max"
+        );
         // Avoid the all-zeros xorshift fixed point.
-        let state = if seed == 0 { 0xDEAD_BEEF_CAFE_F00D } else { seed };
+        let state = if seed == 0 {
+            0xDEAD_BEEF_CAFE_F00D
+        } else {
+            seed
+        };
         Self {
             state,
             min,

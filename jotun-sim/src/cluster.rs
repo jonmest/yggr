@@ -10,9 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use jotun_core::{Action, ConfigChange, Engine, Event as CoreEvent, Incoming, NodeId};
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
+use rand::{Rng, SeedableRng};
 
 use crate::env::SharedRng;
 use crate::harness::{NodeHarness, PersistOrderingError};
@@ -101,7 +101,6 @@ impl<C: Clone> Policy<C> {
             proposal_command,
         }
     }
-
 }
 
 impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
@@ -246,7 +245,11 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
 
     /// Drive the cluster until `predicate` returns `true` or
     /// `max_steps` is reached. Returns the number of steps taken.
-    pub fn run_until<F: FnMut(&Self) -> bool>(&mut self, mut predicate: F, max_steps: usize) -> usize {
+    pub fn run_until<F: FnMut(&Self) -> bool>(
+        &mut self,
+        mut predicate: F,
+        max_steps: usize,
+    ) -> usize {
         for i in 0..max_steps {
             if predicate(self) {
                 return i;
@@ -375,8 +378,16 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
             }
             Category::Reorder => {
                 let n = self.network.len();
-                let a = self.rng.lock().expect("sim RNG mutex poisoned").random_range(0..n);
-                let mut b = self.rng.lock().expect("sim RNG mutex poisoned").random_range(0..n);
+                let a = self
+                    .rng
+                    .lock()
+                    .expect("sim RNG mutex poisoned")
+                    .random_range(0..n);
+                let mut b = self
+                    .rng
+                    .lock()
+                    .expect("sim RNG mutex poisoned")
+                    .random_range(0..n);
                 if b == a {
                     b = (b + 1) % n;
                 }
@@ -390,11 +401,7 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                     .collect::<Vec<_>>()
                     .choose(&mut *self.rng.lock().expect("sim RNG mutex poisoned"))
                     .expect("non-empty");
-                let cmd = self
-                    .policy
-                    .proposal_command
-                    .clone()
-                    .expect("guarded above");
+                let cmd = self.policy.proposal_command.clone().expect("guarded above");
                 Event::Propose(id, cmd)
             }
             Category::Crash => {
@@ -408,9 +415,11 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                 // remaining-majority liveness bound becomes
                 // unverifiable. If only one node is up, tick instead.
                 if up.len() <= 1 {
-                    return Event::Tick(up.into_iter().next().unwrap_or_else(|| {
-                        *self.nodes.keys().next().expect("non-empty cluster")
-                    }));
+                    return Event::Tick(
+                        up.into_iter().next().unwrap_or_else(|| {
+                            *self.nodes.keys().next().expect("non-empty cluster")
+                        }),
+                    );
                 }
                 let id = *up
                     .choose(&mut *self.rng.lock().expect("sim RNG mutex poisoned"))
@@ -424,14 +433,14 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                     .filter(|(_, h)| !h.is_up())
                     .map(|(id, _)| *id)
                     .collect();
-                if let Some(&id) = down.choose(&mut *self.rng.lock().expect("sim RNG mutex poisoned")) {
+                if let Some(&id) =
+                    down.choose(&mut *self.rng.lock().expect("sim RNG mutex poisoned"))
+                {
                     Event::Recover(id)
                 } else {
                     // No crashed nodes — fall back to a tick so the
                     // step still makes progress.
-                    Event::Tick(
-                        *self.nodes.keys().next().expect("non-empty cluster"),
-                    )
+                    Event::Tick(*self.nodes.keys().next().expect("non-empty cluster"))
                 }
             }
             Category::Flush => {
@@ -453,9 +462,7 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                     };
                     Event::Flush(id, n)
                 } else {
-                    Event::Tick(
-                        *self.nodes.keys().next().expect("non-empty cluster"),
-                    )
+                    Event::Tick(*self.nodes.keys().next().expect("non-empty cluster"))
                 }
             }
             Category::Partition => {
@@ -463,7 +470,12 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                 let all: Vec<NodeId> = self.nodes.keys().copied().collect();
                 let mut a_side = BTreeSet::new();
                 for id in &all {
-                    if self.rng.lock().expect("sim RNG mutex poisoned").random_bool(0.5) {
+                    if self
+                        .rng
+                        .lock()
+                        .expect("sim RNG mutex poisoned")
+                        .random_bool(0.5)
+                    {
                         a_side.insert(*id);
                     }
                 }

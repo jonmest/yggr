@@ -83,8 +83,7 @@ fn add_peer_immediately_replicates_to_the_new_peer() {
     let mut engine = elected_leader_3_node();
     let actions = engine.step(propose_add_peer(4));
     let appends = super::fixtures::collect_append_entries(&actions);
-    let recipients: std::collections::BTreeSet<_> =
-        appends.iter().map(|(p, _)| p.get()).collect();
+    let recipients: std::collections::BTreeSet<_> = appends.iter().map(|(p, _)| p.get()).collect();
     assert!(
         recipients.contains(&4),
         "newly-added peer must be in the broadcast: {recipients:?}",
@@ -96,8 +95,7 @@ fn remove_peer_stops_replicating_to_the_removed_peer() {
     let mut engine = elected_leader_3_node();
     let actions = engine.step(propose_remove_peer(3));
     let appends = super::fixtures::collect_append_entries(&actions);
-    let recipients: std::collections::BTreeSet<_> =
-        appends.iter().map(|(p, _)| p.get()).collect();
+    let recipients: std::collections::BTreeSet<_> = appends.iter().map(|(p, _)| p.get()).collect();
     assert!(
         !recipients.contains(&3),
         "removed peer must not appear in the broadcast: {recipients:?}",

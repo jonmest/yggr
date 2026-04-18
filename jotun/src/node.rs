@@ -405,13 +405,15 @@ where
             .snapshot
             .as_ref()
             .map(|s| LogId::new(s.last_included_index, s.last_included_term));
-        let term = recovered
-            .hard_state
-            .as_ref()
-            .map_or_else(
-                || recovered.log.last().map_or(jotun_core::Term::ZERO, |e| e.id.term),
-                |hs| hs.current_term,
-            );
+        let term = recovered.hard_state.as_ref().map_or_else(
+            || {
+                recovered
+                    .log
+                    .last()
+                    .map_or(jotun_core::Term::ZERO, |e| e.id.term)
+            },
+            |hs| hs.current_term,
+        );
         let _ = d.engine.step(Event::Incoming(Incoming {
             from: peer,
             message: Message::AppendEntriesRequest(RequestAppendEntries {
@@ -438,9 +440,17 @@ async fn handle_propose<S, St, Tr>(
     // PersistLogEntries action (if any) tells us the assigned index;
     // we register the reply oneshot at that index.
     let bytes = S::encode_command(&command);
-    let last_before = d.engine.log().last_log_id().map_or(LogIndex::ZERO, |l| l.index);
+    let last_before = d
+        .engine
+        .log()
+        .last_log_id()
+        .map_or(LogIndex::ZERO, |l| l.index);
     let actions = d.engine.step(Event::ClientProposal(bytes));
-    let last_after = d.engine.log().last_log_id().map_or(LogIndex::ZERO, |l| l.index);
+    let last_after = d
+        .engine
+        .log()
+        .last_log_id()
+        .map_or(LogIndex::ZERO, |l| l.index);
 
     if last_after > last_before {
         // Leader appended; remember this index for apply-time reply.
@@ -450,8 +460,9 @@ async fn handle_propose<S, St, Tr>(
             Action::Redirect { leader_hint } => Some(*leader_hint),
             _ => None,
         });
-        let err = leader_hint
-            .map_or(ProposeError::NoLeader, |h| ProposeError::NotLeader { leader_hint: h });
+        let err = leader_hint.map_or(ProposeError::NoLeader, |h| ProposeError::NotLeader {
+            leader_hint: h,
+        });
         let _ = reply.send(Err(err));
     }
 
@@ -467,9 +478,17 @@ async fn handle_config_change<S, St, Tr>(
     St: Storage<Vec<u8>>,
     Tr: Transport<Vec<u8>>,
 {
-    let last_before = d.engine.log().last_log_id().map_or(LogIndex::ZERO, |l| l.index);
+    let last_before = d
+        .engine
+        .log()
+        .last_log_id()
+        .map_or(LogIndex::ZERO, |l| l.index);
     let actions = d.engine.step(Event::ProposeConfigChange(change));
-    let last_after = d.engine.log().last_log_id().map_or(LogIndex::ZERO, |l| l.index);
+    let last_after = d
+        .engine
+        .log()
+        .last_log_id()
+        .map_or(LogIndex::ZERO, |l| l.index);
 
     if last_after > last_before {
         d.pending_config_changes.insert(last_after, reply);
@@ -478,8 +497,9 @@ async fn handle_config_change<S, St, Tr>(
             Action::Redirect { leader_hint } => Some(*leader_hint),
             _ => None,
         });
-        let err = leader_hint
-            .map_or(ProposeError::NoLeader, |h| ProposeError::NotLeader { leader_hint: h });
+        let err = leader_hint.map_or(ProposeError::NoLeader, |h| ProposeError::NotLeader {
+            leader_hint: h,
+        });
         let _ = reply.send(Err(err));
     }
     let _ = dispatch_actions(d, actions).await;

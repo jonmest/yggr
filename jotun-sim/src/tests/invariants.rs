@@ -84,7 +84,9 @@ fn disjoint_apply_is_silent() {
     nodes.insert(node(2), h2);
 
     let mut checker: SafetyChecker<u64> = SafetyChecker::new();
-    checker.check(&nodes).expect("disjoint — no overlap to disagree on");
+    checker
+        .check(&nodes)
+        .expect("disjoint — no overlap to disagree on");
 }
 
 /// End-to-end: run a happy cluster for a while and confirm no

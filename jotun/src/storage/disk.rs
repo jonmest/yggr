@@ -30,8 +30,8 @@
 
 use std::path::{Path, PathBuf};
 
-use jotun_core::{LogEntry, LogIndex, NodeId, Term};
 use jotun_core::transport::protobuf as proto;
+use jotun_core::{LogEntry, LogIndex, NodeId, Term};
 use prost::Message as _;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
@@ -168,11 +168,8 @@ where
 
     async fn recover(&mut self) -> Result<RecoveredState<C>, Self::Error> {
         let hard_state = read_hard_state(&self.path(HARD_STATE_FILE)).await?;
-        let snapshot = read_snapshot(
-            &self.path(SNAPSHOT_FILE),
-            &self.path(SNAPSHOT_META_FILE),
-        )
-        .await?;
+        let snapshot =
+            read_snapshot(&self.path(SNAPSHOT_FILE), &self.path(SNAPSHOT_META_FILE)).await?;
         if let Some(snap) = &snapshot {
             self.snapshot_floor = snap.last_included_index;
         }
@@ -207,10 +204,7 @@ where
             return Ok(());
         }
         self.open_log_for_append().await?;
-        let f = self
-            .log_file
-            .as_mut()
-            .expect("opened above");
+        let f = self.log_file.as_mut().expect("opened above");
         for entry in entries {
             let proto_entry: proto::LogEntry = entry.into();
             let bytes = proto_entry.encode_to_vec();
@@ -228,10 +222,7 @@ where
         // index >= from, rewrite atomically. Slow for big logs;
         // segments would fix it, but those come post-0.1.
         let entries = read_log::<C>(&self.path(LOG_FILE), self.snapshot_floor).await?;
-        let kept: Vec<LogEntry<C>> = entries
-            .into_iter()
-            .filter(|e| e.id.index < from)
-            .collect();
+        let kept: Vec<LogEntry<C>> = entries.into_iter().filter(|e| e.id.index < from).collect();
         let mut bytes = Vec::new();
         for entry in kept {
             let proto_entry: proto::LogEntry = entry.into();
@@ -336,7 +327,10 @@ async fn read_snapshot(
     }))
 }
 
-async fn read_log<C>(path: &Path, snapshot_floor: LogIndex) -> Result<Vec<LogEntry<C>>, DiskStorageError>
+async fn read_log<C>(
+    path: &Path,
+    snapshot_floor: LogIndex,
+) -> Result<Vec<LogEntry<C>>, DiskStorageError>
 where
     C: From<Vec<u8>>,
 {

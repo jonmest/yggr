@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use jotun::{Config, DecodeError, DiskStorage, Node, NodeId, ProposeError, StateMachine, TcpTransport};
+use jotun::{
+    Config, DecodeError, DiskStorage, Node, NodeId, ProposeError, StateMachine, TcpTransport,
+};
 
 // ---------------------------------------------------------------------------
 // Toy state machine: a counter command stream.
@@ -100,11 +102,14 @@ async fn single_node_node_starts_and_shuts_down() {
     let storage = DiskStorage::open(&tmp.0).await.unwrap();
     let port = free_port();
     let addr: SocketAddr = (Ipv4Addr::LOCALHOST, port).into();
-    let transport: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr, BTreeMap::new()).await.unwrap();
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .unwrap();
 
     let config = Config::new(nid(1), std::iter::empty::<NodeId>());
-    let node = Node::start(config, Counter::default(), storage, transport).await.unwrap();
+    let node = Node::start(config, Counter::default(), storage, transport)
+        .await
+        .unwrap();
     node.shutdown().await.unwrap();
 }
 
@@ -114,8 +119,9 @@ async fn single_node_self_elects_and_applies_proposal() {
     let storage = DiskStorage::open(&tmp.0).await.unwrap();
     let port = free_port();
     let addr: SocketAddr = (Ipv4Addr::LOCALHOST, port).into();
-    let transport: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr, BTreeMap::new()).await.unwrap();
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .unwrap();
 
     let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
     // Smaller intervals so the self-election fires fast in tests.
@@ -124,28 +130,24 @@ async fn single_node_self_elects_and_applies_proposal() {
     config.heartbeat_interval_ticks = 1;
     config.tick_interval = Duration::from_millis(10);
 
-    let node = Node::start(config, Counter::default(), storage, transport).await.unwrap();
+    let node = Node::start(config, Counter::default(), storage, transport)
+        .await
+        .unwrap();
 
     // Give the node a moment to elect itself (single-node cluster
     // self-elects on first tick after the timeout).
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        node.propose(CountCmd::Inc(5)),
-    )
-    .await
-    .expect("propose timed out")
-    .expect("propose returned error");
+    let result = tokio::time::timeout(Duration::from_secs(2), node.propose(CountCmd::Inc(5)))
+        .await
+        .expect("propose timed out")
+        .expect("propose returned error");
     assert_eq!(result, 5);
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(2),
-        node.propose(CountCmd::Inc(3)),
-    )
-    .await
-    .expect("propose timed out")
-    .expect("propose returned error");
+    let result = tokio::time::timeout(Duration::from_secs(2), node.propose(CountCmd::Inc(3)))
+        .await
+        .expect("propose timed out")
+        .expect("propose returned error");
     assert_eq!(result, 8);
 
     node.shutdown().await.unwrap();
@@ -157,11 +159,14 @@ async fn shutdown_handle_after_first_use_returns_shutdown_error() {
     let storage = DiskStorage::open(&tmp.0).await.unwrap();
     let port = free_port();
     let addr: SocketAddr = (Ipv4Addr::LOCALHOST, port).into();
-    let transport: TcpTransport<Vec<u8>> =
-        TcpTransport::start(nid(1), addr, BTreeMap::new()).await.unwrap();
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .unwrap();
 
     let config = Config::new(nid(1), std::iter::empty::<NodeId>());
-    let node = Node::start(config, Counter::default(), storage, transport).await.unwrap();
+    let node = Node::start(config, Counter::default(), storage, transport)
+        .await
+        .unwrap();
     let clone = node.clone();
     node.shutdown().await.unwrap();
     // Give the driver a tick to finish exiting.

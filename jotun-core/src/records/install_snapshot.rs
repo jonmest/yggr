@@ -5,7 +5,7 @@
 //! longer construct a valid `prev_log_id` from entries that have been
 //! compacted into the snapshot.
 
-use crate::types::{log::LogId, node::NodeId, term::Term, index::LogIndex};
+use crate::types::{index::LogIndex, log::LogId, node::NodeId, term::Term};
 
 /// Leader → follower: "here is a snapshot of the application state
 /// up to `last_included`. Replace your log up to and including that

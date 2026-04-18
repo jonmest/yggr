@@ -57,7 +57,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use jotun::{Config, DecodeError, DiskStorage, Node, NodeId, ProposeError, StateMachine, TcpTransport};
+use jotun::{
+    Config, DecodeError, DiskStorage, Node, NodeId, ProposeError, StateMachine, TcpTransport,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
@@ -81,7 +83,12 @@ struct KvStateMachine {
 impl KvStateMachine {
     fn new() -> (Self, Arc<Mutex<KvState>>) {
         let inner = Arc::new(Mutex::new(KvState::default()));
-        (Self { inner: Arc::clone(&inner) }, inner)
+        (
+            Self {
+                inner: Arc::clone(&inner),
+            },
+            inner,
+        )
     }
 }
 
@@ -114,12 +121,21 @@ impl StateMachine for KvStateMachine {
         let tag = parts.next().ok_or_else(|| DecodeError::new("empty"))?;
         match tag {
             "S" => {
-                let key = parts.next().ok_or_else(|| DecodeError::new("missing key"))?;
-                let value = parts.next().ok_or_else(|| DecodeError::new("missing value"))?;
-                Ok(KvCmd::Set { key: key.into(), value: value.into() })
+                let key = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing key"))?;
+                let value = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing value"))?;
+                Ok(KvCmd::Set {
+                    key: key.into(),
+                    value: value.into(),
+                })
             }
             "D" => {
-                let key = parts.next().ok_or_else(|| DecodeError::new("missing key"))?;
+                let key = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing key"))?;
                 Ok(KvCmd::Delete { key: key.into() })
             }
             other => Err(DecodeError::new(format!("unknown tag: {other}"))),
@@ -235,17 +251,15 @@ async fn serve_client(
                 let v = state.lock().unwrap().map.get(&key).cloned();
                 v.unwrap_or_else(|| "<nil>".to_string())
             }
-            Ok(Request::Delete { key }) => {
-                match node.propose(KvCmd::Delete { key }).await {
-                    Ok(KvResponse::Prev(Some(v))) => v,
-                    Ok(KvResponse::Prev(None)) => "<nil>".to_string(),
-                    Ok(KvResponse::Ok) => "OK".to_string(),
-                    Err(ProposeError::NotLeader { leader_hint }) => {
-                        format!("REDIRECT {leader_hint}")
-                    }
-                    Err(e) => format!("ERROR {e}"),
+            Ok(Request::Delete { key }) => match node.propose(KvCmd::Delete { key }).await {
+                Ok(KvResponse::Prev(Some(v))) => v,
+                Ok(KvResponse::Prev(None)) => "<nil>".to_string(),
+                Ok(KvResponse::Ok) => "OK".to_string(),
+                Err(ProposeError::NotLeader { leader_hint }) => {
+                    format!("REDIRECT {leader_hint}")
                 }
-            }
+                Err(e) => format!("ERROR {e}"),
+            },
             Err(e) => format!("PARSE_ERROR {e}"),
         };
         if w.write_all(response.as_bytes()).await.is_err() {
@@ -310,11 +324,7 @@ async fn main() {
     };
 
     let node_id = NodeId::new(cli.node_id).expect("--node-id must be non-zero");
-    let peer_id_set: Vec<NodeId> = cli
-        .peers
-        .keys()
-        .filter_map(|&id| NodeId::new(id))
-        .collect();
+    let peer_id_set: Vec<NodeId> = cli.peers.keys().filter_map(|&id| NodeId::new(id)).collect();
     let peer_addrs: BTreeMap<NodeId, SocketAddr> = cli
         .peers
         .iter()
@@ -324,15 +334,22 @@ async fn main() {
     info!(%node_id, %cli.peer_addr, %cli.client_addr, data_dir = %cli.data_dir.display(), "booting");
 
     let (sm, state) = KvStateMachine::new();
-    let storage = DiskStorage::open(&cli.data_dir).await.expect("open storage");
-    let transport: TcpTransport<Vec<u8>> =
-        TcpTransport::start(node_id, cli.peer_addr, peer_addrs).await.expect("start transport");
+    let storage = DiskStorage::open(&cli.data_dir)
+        .await
+        .expect("open storage");
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(node_id, cli.peer_addr, peer_addrs)
+        .await
+        .expect("start transport");
 
     let config = Config::new(node_id, peer_id_set);
-    let node = Node::start(config, sm, storage, transport).await.expect("start node");
+    let node = Node::start(config, sm, storage, transport)
+        .await
+        .expect("start node");
 
     // Client listener.
-    let listener = TcpListener::bind(cli.client_addr).await.expect("bind client port");
+    let listener = TcpListener::bind(cli.client_addr)
+        .await
+        .expect("bind client port");
     info!(%cli.client_addr, "accepting client connections");
 
     let node_for_clients = node.clone();

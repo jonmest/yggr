@@ -28,8 +28,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jotun_core::{Incoming, Message, NodeId};
 use jotun_core::transport::protobuf as proto;
+use jotun_core::{Incoming, Message, NodeId};
 use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -205,12 +205,18 @@ where
         let sender_raw = u64::from_be_bytes(sender_bytes);
         let len = u32::from_be_bytes(len_bytes) as usize;
         let Some(sender) = NodeId::new(sender_raw) else {
-            warn!(target = "jotun::transport", "frame sender id is zero; dropping connection");
+            warn!(
+                target = "jotun::transport",
+                "frame sender id is zero; dropping connection"
+            );
             return;
         };
         // Frame size cap so a malicious or buggy peer can't OOM us.
         if len > 64 * 1024 * 1024 {
-            warn!(target = "jotun::transport", len, "frame body too large; dropping connection");
+            warn!(
+                target = "jotun::transport",
+                len, "frame body too large; dropping connection"
+            );
             return;
         }
         let mut body = vec![0u8; len];
@@ -233,7 +239,10 @@ where
             }
         };
         if inbound
-            .send(Incoming { from: sender, message })
+            .send(Incoming {
+                from: sender,
+                message,
+            })
             .await
             .is_err()
         {

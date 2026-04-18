@@ -68,7 +68,10 @@ pub enum SafetyViolation {
     /// at once. Violates the §4.3 single-server rule (at most one in
     /// flight); the leader-side append guard exists exactly to prevent
     /// this.
-    MultipleUncommittedConfigChanges { node: NodeId, indices: Vec<LogIndex> },
+    MultipleUncommittedConfigChanges {
+        node: NodeId,
+        indices: Vec<LogIndex>,
+    },
     /// A node's snapshot floor is past its `commit_index`. Snapshots
     /// must only cover committed state — §7 invariant.
     SnapshotPastCommit {
@@ -153,10 +156,7 @@ impl<C: Clone + PartialEq> SafetyChecker<C> {
                 continue;
             };
             let from = engine.commit_index().get() + 1;
-            let last = engine
-                .log()
-                .last_log_id()
-                .map_or(0, |l| l.index.get());
+            let last = engine.log().last_log_id().map_or(0, |l| l.index.get());
             let mut indices: Vec<LogIndex> = Vec::new();
             for i in from..=last {
                 let idx = LogIndex::new(i);
@@ -242,8 +242,7 @@ impl<C: Clone + PartialEq> SafetyChecker<C> {
                 if let Some(k) = agreement {
                     for step in 1..=k {
                         let ei = LogIndex::new(step);
-                        let (Some(ea), Some(eb)) =
-                            (a.log().entry_at(ei), b.log().entry_at(ei))
+                        let (Some(ea), Some(eb)) = (a.log().entry_at(ei), b.log().entry_at(ei))
                         else {
                             continue;
                         };
@@ -283,9 +282,9 @@ impl<C: Clone + PartialEq> SafetyChecker<C> {
                         let other = nodes
                             .iter()
                             .find(|(_, h)| {
-                                h.applied.iter().any(|e| {
-                                    e.id == seen.id && e.payload == seen.payload
-                                })
+                                h.applied
+                                    .iter()
+                                    .any(|e| e.id == seen.id && e.payload == seen.payload)
                             })
                             .map(|(id, _)| *id)
                             .unwrap_or(harness.id);

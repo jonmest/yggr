@@ -26,13 +26,7 @@ fn commit_follower_log(engine: &mut Engine<Vec<u8>>, idx: u64) {
     let last_term = engine.log().last_log_id().unwrap().term;
     engine.step(append_entries_from(
         2,
-        append_entries_request(
-            last_term.get(),
-            2,
-            engine.log().last_log_id(),
-            vec![],
-            idx,
-        ),
+        append_entries_request(last_term.get(), 2, engine.log().last_log_id(), vec![], idx),
     ));
 }
 
@@ -56,10 +50,7 @@ fn snapshot_taken_truncates_log_up_to_index_and_emits_persist_snapshot() {
     assert!(engine.log().entry_at(LogIndex::new(4)).is_some());
     assert!(engine.log().entry_at(LogIndex::new(5)).is_some());
     // last_log_id still reflects the highest index we've ever held.
-    assert_eq!(
-        engine.log().last_log_id().map(|l| l.index.get()),
-        Some(5),
-    );
+    assert_eq!(engine.log().last_log_id().map(|l| l.index.get()), Some(5),);
 
     // PersistSnapshot emitted with the right metadata.
     let persist = actions.iter().find_map(|a| match a {
@@ -334,15 +325,21 @@ fn follower_install_snapshot_truncates_log_and_advances_commit() {
         .iter()
         .enumerate()
         .filter_map(|(i, a)| match a {
-            Action::PersistSnapshot { .. }
-            | Action::ApplySnapshot { .. }
-            | Action::Send { .. } => Some(i),
+            Action::PersistSnapshot { .. } | Action::ApplySnapshot { .. } | Action::Send { .. } => {
+                Some(i)
+            }
             _ => None,
         })
         .collect();
     assert!(positions.len() >= 3);
-    assert!(matches!(actions[positions[0]], Action::PersistSnapshot { .. }));
-    assert!(matches!(actions[positions[1]], Action::ApplySnapshot { .. }));
+    assert!(matches!(
+        actions[positions[0]],
+        Action::PersistSnapshot { .. }
+    ));
+    assert!(matches!(
+        actions[positions[1]],
+        Action::ApplySnapshot { .. }
+    ));
     assert!(matches!(actions[positions[2]], Action::Send { .. }));
 }
 
@@ -353,14 +350,7 @@ fn follower_install_snapshot_keeps_consistent_log_tail() {
     let mut engine = follower(1);
     seed_log(&mut engine, &[1, 1, 1, 1]);
 
-    engine.step(install_snapshot_from(
-        2,
-        1,
-        2,
-        1,
-        2,
-        b"snap".to_vec(),
-    ));
+    engine.step(install_snapshot_from(2, 1, 2, 1, 2, b"snap".to_vec()));
 
     assert_eq!(engine.log().snapshot_last().index, LogIndex::new(2));
     // Entries 3, 4 still in memory.
@@ -434,4 +424,3 @@ fn install_snapshot_at_higher_term_demotes_candidate_then_accepts() {
     assert_eq!(engine.current_term(), term(5));
     assert_eq!(engine.log().snapshot_last().index, LogIndex::new(1));
 }
-

@@ -312,9 +312,7 @@ pub(super) fn install_snapshot_response_from(from: u64, term_n: u64) -> Event<Ve
     use crate::records::install_snapshot::InstallSnapshotResponse;
     Event::Incoming(Incoming {
         from: node(from),
-        message: Message::InstallSnapshotResponse(InstallSnapshotResponse {
-            term: term(term_n),
-        }),
+        message: Message::InstallSnapshotResponse(InstallSnapshotResponse { term: term(term_n) }),
     })
 }
 
@@ -346,7 +344,10 @@ pub(super) fn collect_apply_snapshots(actions: &[Action<Vec<u8>>]) -> Vec<Vec<u8
 
 pub(super) fn collect_install_snapshots(
     actions: &[Action<Vec<u8>>],
-) -> Vec<(NodeId, crate::records::install_snapshot::RequestInstallSnapshot)> {
+) -> Vec<(
+    NodeId,
+    crate::records::install_snapshot::RequestInstallSnapshot,
+)> {
     actions
         .iter()
         .filter_map(|a| match a {

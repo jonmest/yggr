@@ -147,8 +147,7 @@ impl<C: Clone> NodeHarness<C> {
                     for entry in entries {
                         self.ever_persisted.insert(entry.id);
                     }
-                    self.pending
-                        .push(PendingWrite::LogEntries(entries.clone()));
+                    self.pending.push(PendingWrite::LogEntries(entries.clone()));
                 }
                 Action::Send { message, .. } => {
                     check_send_ordering(
@@ -362,16 +361,12 @@ fn hydrate_engine<C: Clone>(engine: &mut Engine<C>, persisted: &PersistedState<C
         // up-to-date — we pass the persisted last log id, which the
         // engine itself now holds, so the predicate passes.
         use jotun_core::RequestVote;
-        let last_log_id = persisted
-            .log
-            .last()
-            .map(|e| e.id)
-            .or_else(|| {
-                persisted
-                    .snapshot
-                    .as_ref()
-                    .map(|s| LogId::new(s.last_included_index, s.last_included_term))
-            });
+        let last_log_id = persisted.log.last().map(|e| e.id).or_else(|| {
+            persisted
+                .snapshot
+                .as_ref()
+                .map(|s| LogId::new(s.last_included_index, s.last_included_term))
+        });
         let _ = engine.step(Event::Incoming(Incoming {
             from: voted_for,
             message: Message::VoteRequest(RequestVote {

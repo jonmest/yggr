@@ -80,7 +80,9 @@ impl StateMachine for ObservableKv {
         let tag = parts.next().ok_or_else(|| DecodeError::new("empty"))?;
         match tag {
             "S" => {
-                let key = parts.next().ok_or_else(|| DecodeError::new("missing key"))?;
+                let key = parts
+                    .next()
+                    .ok_or_else(|| DecodeError::new("missing key"))?;
                 let value = parts
                     .next()
                     .ok_or_else(|| DecodeError::new("missing value"))?;
@@ -201,10 +203,7 @@ fn all_ids() -> [NodeId; 3] {
 }
 
 fn transport_peer_set_for(me: NodeId) -> Vec<NodeId> {
-    all_ids()
-        .into_iter()
-        .filter(|&p| p != me)
-        .collect()
+    all_ids().into_iter().filter(|&p| p != me).collect()
 }
 
 fn sm_peer_ids(v: &[NodeId]) -> Vec<NodeId> {
@@ -507,12 +506,8 @@ async fn cluster_survives_full_restart_from_disk() {
     ) -> (Node<ObservableKv>, Arc<Mutex<KvSnapshot>>) {
         let (sm, snap) = ObservableKv::new();
         let storage = DiskStorage::open(&dir).await.unwrap();
-        let transport: TcpTransport<Vec<u8>> =
-            TcpTransport::start(id, addr, peers).await.unwrap();
-        let mut config = Config::new(
-            id,
-            ids_other_than(id).into_iter().collect::<Vec<_>>(),
-        );
+        let transport: TcpTransport<Vec<u8>> = TcpTransport::start(id, addr, peers).await.unwrap();
+        let mut config = Config::new(id, ids_other_than(id).into_iter().collect::<Vec<_>>());
         config.election_timeout_min_ticks = 5;
         config.election_timeout_max_ticks = 15;
         config.heartbeat_interval_ticks = 1;
@@ -588,9 +583,8 @@ async fn cluster_survives_full_restart_from_disk() {
 
     let mut second_life: Vec<(Node<ObservableKv>, Arc<Mutex<KvSnapshot>>)> = Vec::new();
     for (i, &id) in ids.iter().enumerate() {
-        second_life.push(
-            boot_node(id, new_addrs[&id], dir_paths[i].clone(), new_peer_map(id)).await,
-        );
+        second_life
+            .push(boot_node(id, new_addrs[&id], dir_paths[i].clone(), new_peer_map(id)).await);
     }
 
     // Every node's state machine eventually sees the persisted entry.

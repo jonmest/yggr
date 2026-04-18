@@ -52,10 +52,7 @@ fn add_then_remove_keeps_cluster_alive() {
 
     // Drive until commit advances past the AddPeer entry. New majority
     // is 3 of 4 — leader plus two more must ack.
-    let steps = cluster.run_until(
-        |c| c.max_commit_index() > initial_commit,
-        1200,
-    );
+    let steps = cluster.run_until(|c| c.max_commit_index() > initial_commit, 1200);
     assert!(
         steps < 1200,
         "AddPeer never committed; max commit = {}",
@@ -72,10 +69,7 @@ fn add_then_remove_keeps_cluster_alive() {
 
     // After RemovePeer, new majority is 2 of 3 (leader + node 4 + the
     // surviving original). Drive until commit advances past Remove.
-    let steps = cluster.run_until(
-        |c| c.max_commit_index() > post_add_commit,
-        1200,
-    );
+    let steps = cluster.run_until(|c| c.max_commit_index() > post_add_commit, 1200);
     assert!(
         steps < 1200,
         "RemovePeer never committed; max commit = {}",
@@ -91,10 +85,7 @@ fn add_then_remove_keeps_cluster_alive() {
 
     // Drive a few more proposals to verify continued progress.
     let post_remove_commit = cluster.max_commit_index();
-    let steps = cluster.run_until(
-        |c| c.max_commit_index() > post_remove_commit + 1,
-        800,
-    );
+    let steps = cluster.run_until(|c| c.max_commit_index() > post_remove_commit + 1, 800);
     assert!(
         steps < 800,
         "no further commits after membership churn; max commit = {}",

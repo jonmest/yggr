@@ -542,11 +542,7 @@ impl<C: Clone> Engine<C> {
     /// membership proposal.
     fn has_uncommitted_config_change(&self) -> bool {
         let from = self.state.commit_index.get() + 1;
-        let last = self
-            .state
-            .log
-            .last_log_id()
-            .map_or(0, |l| l.index.get());
+        let last = self.state.log.last_log_id().map_or(0, |l| l.index.get());
         for i in from..=last {
             if let Some(entry) = self.state.log.entry_at(LogIndex::new(i))
                 && matches!(entry.payload, LogPayload::ConfigChange(_))
@@ -631,11 +627,7 @@ impl<C: Clone> Engine<C> {
     /// so we recompute from scratch.
     fn recompute_active_config(&mut self) {
         self.state.peers.clone_from(&self.state.initial_peers);
-        let last = self
-            .state
-            .log
-            .last_log_id()
-            .map_or(0, |l| l.index.get());
+        let last = self.state.log.last_log_id().map_or(0, |l| l.index.get());
         for i in 1..=last {
             if let Some(entry) = self.state.log.entry_at(LogIndex::new(i))
                 && let LogPayload::ConfigChange(change) = entry.payload
@@ -974,10 +966,7 @@ impl<C: Clone> Engine<C> {
     /// state machine. The `PersistSnapshot` action is emitted before
     /// the final response Send to honour the persist-before-send rule.
     #[instrument(target = "jotun::engine", skip_all)]
-    fn on_install_snapshot_request(
-        &mut self,
-        request: RequestInstallSnapshot,
-    ) -> Vec<Action<C>> {
+    fn on_install_snapshot_request(&mut self, request: RequestInstallSnapshot) -> Vec<Action<C>> {
         let prior_term = self.state.current_term;
         let prior_voted_for = self.state.voted_for;
 
@@ -1140,8 +1129,7 @@ impl<C: Clone> Engine<C> {
             unreachable!("just matched");
         };
         let n = leader.progress.majority_index(leader_last);
-        if n > self.state.commit_index
-            && self.state.log.term_at(n) == Some(self.state.current_term)
+        if n > self.state.commit_index && self.state.log.term_at(n) == Some(self.state.current_term)
         {
             let prior_commit = self.state.commit_index;
             self.state.commit_index = n;
@@ -1193,7 +1181,8 @@ impl<C: Clone> Engine<C> {
         if !matches!(self.state.role, RoleState::Leader(_)) {
             return vec![];
         }
-        self.state.peers
+        self.state
+            .peers
             .iter()
             .copied()
             .map(|peer| self.append_entries_to(peer))
@@ -1250,11 +1239,7 @@ impl<C: Clone> Engine<C> {
     /// snapshot bytes in memory.
     fn install_snapshot_to(&self, peer: NodeId) -> Action<C> {
         let last_included = self.state.log.snapshot_last();
-        let bytes = self
-            .state
-            .snapshot_bytes
-            .clone()
-            .unwrap_or_default();
+        let bytes = self.state.snapshot_bytes.clone().unwrap_or_default();
         Action::Send {
             to: peer,
             message: InstallSnapshotRequest(RequestInstallSnapshot {

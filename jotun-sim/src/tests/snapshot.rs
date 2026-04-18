@@ -46,10 +46,7 @@ fn leader_takes_snapshot_keeps_safety() {
 
     // Cluster keeps making progress after the snapshot.
     let post_snap_commit = cluster.max_commit_index();
-    let steps = cluster.run_until(
-        |c| c.max_commit_index() > post_snap_commit,
-        3000,
-    );
+    let steps = cluster.run_until(|c| c.max_commit_index() > post_snap_commit, 3000);
     assert!(
         steps < 3000,
         "no progress after snapshot; max commit = {}",
