@@ -26,7 +26,7 @@ pub mod state_machine;
 pub mod storage;
 pub mod transport;
 
-pub use node::{Bootstrap, Config, Node, NodeStartError, NodeStatus, ProposeError, Role};
+pub use node::{Bootstrap, Config, ConfigError, Node, NodeStartError, NodeStatus, ProposeError, Role};
 pub use state_machine::{DecodeError, StateMachine};
 pub use storage::{DiskStorage, DiskStorageError, Storage, StoredHardState, StoredSnapshot};
 pub use transport::{TcpTransport, TcpTransportError, Transport};

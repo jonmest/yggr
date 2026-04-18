@@ -100,6 +100,7 @@ pub enum Bootstrap {
 /// with [`ProposeError::Busy`] rather than queue unboundedly in the
 /// driver's reply map. 1024 is plenty of headroom for normal
 /// workloads; lower it if your callers can tolerate backpressure.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct Config {
     pub node_id: NodeId,
@@ -132,6 +133,54 @@ pub struct Config {
     pub max_pending_proposals: usize,
 }
 
+/// Invalid [`Config`] settings rejected by [`Config::validate`] and
+/// [`Node::start`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigError {
+    /// `heartbeat_interval_ticks` must be strictly smaller than the
+    /// election-timeout minimum per §5.2.
+    HeartbeatNotLessThanElectionMin {
+        heartbeat_interval_ticks: u64,
+        election_timeout_min_ticks: u64,
+    },
+    /// The election-timeout range is empty or inverted.
+    InvalidElectionTimeoutRange {
+        election_timeout_min_ticks: u64,
+        election_timeout_max_ticks: u64,
+    },
+    /// `peers` must exclude self; membership is always "other nodes".
+    PeersContainSelf {
+        node_id: NodeId,
+    },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HeartbeatNotLessThanElectionMin {
+                heartbeat_interval_ticks,
+                election_timeout_min_ticks,
+            } => write!(
+                f,
+                "heartbeat interval {heartbeat_interval_ticks} must be less than election timeout min {election_timeout_min_ticks}"
+            ),
+            Self::InvalidElectionTimeoutRange {
+                election_timeout_min_ticks,
+                election_timeout_max_ticks,
+            } => write!(
+                f,
+                "election timeout range [{election_timeout_min_ticks}, {election_timeout_max_ticks}) is empty"
+            ),
+            Self::PeersContainSelf { node_id } => {
+                write!(f, "peer set must not contain self ({node_id})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 impl Config {
     /// Sensible defaults for a development cluster.
     ///
@@ -161,6 +210,28 @@ impl Config {
             bootstrap,
             max_pending_proposals: 1024,
         }
+    }
+
+    /// Validate invariants the runtime relies on before startup.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.heartbeat_interval_ticks >= self.election_timeout_min_ticks {
+            return Err(ConfigError::HeartbeatNotLessThanElectionMin {
+                heartbeat_interval_ticks: self.heartbeat_interval_ticks,
+                election_timeout_min_ticks: self.election_timeout_min_ticks,
+            });
+        }
+        if self.election_timeout_min_ticks >= self.election_timeout_max_ticks {
+            return Err(ConfigError::InvalidElectionTimeoutRange {
+                election_timeout_min_ticks: self.election_timeout_min_ticks,
+                election_timeout_max_ticks: self.election_timeout_max_ticks,
+            });
+        }
+        if self.peers.contains(&self.node_id) {
+            return Err(ConfigError::PeersContainSelf {
+                node_id: self.node_id,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -215,6 +286,7 @@ pub struct NodeStatus {
 }
 
 /// Errors `propose` / `add_peer` / `remove_peer` can return.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum ProposeError {
     /// We were a follower with a known leader; redirect there.
@@ -260,14 +332,17 @@ impl std::fmt::Display for ProposeError {
 impl std::error::Error for ProposeError {}
 
 /// Errors from [`Node::start`].
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum NodeStartError<E> {
+    Config(ConfigError),
     Storage(E),
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for NodeStartError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Config(e) => write!(f, "invalid config: {e}"),
             Self::Storage(e) => write!(f, "storage recover failed: {e}"),
         }
     }
@@ -276,6 +351,7 @@ impl<E: std::fmt::Display> std::fmt::Display for NodeStartError<E> {
 impl<E: std::error::Error + 'static> std::error::Error for NodeStartError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Config(e) => Some(e),
             Self::Storage(e) => Some(e),
         }
     }
@@ -294,6 +370,7 @@ impl<S: StateMachine> Node<S> {
         St: Storage<Vec<u8>>,
         Tr: Transport<Vec<u8>>,
     {
+        config.validate().map_err(NodeStartError::Config)?;
         let recovered = storage.recover().await.map_err(NodeStartError::Storage)?;
 
         // Resolve the initial peer set from the Bootstrap variant.

@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jotun::{
-    Bootstrap, Config, DecodeError, Node, NodeId, NodeStatus, ProposeError, StateMachine, Storage,
-    StoredHardState, StoredSnapshot, Transport,
+    Bootstrap, Config, ConfigError, DecodeError, Node, NodeId, NodeStartError, NodeStatus,
+    ProposeError, StateMachine, Storage, StoredHardState, StoredSnapshot, Transport,
 };
 use jotun_core::{
     Incoming, LogEntry, LogIndex, LogPayload, Message, Term,
@@ -205,6 +205,47 @@ fn fast_three_node_config(max_pending_proposals: usize) -> Config {
     config
 }
 
+#[test]
+fn config_validate_rejects_heartbeat_not_less_than_election_min() {
+    let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    config.election_timeout_min_ticks = 3;
+    config.election_timeout_max_ticks = 4;
+    config.heartbeat_interval_ticks = 3;
+
+    let err = config.validate().unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::HeartbeatNotLessThanElectionMin {
+            heartbeat_interval_ticks: 3,
+            election_timeout_min_ticks: 3,
+        }
+    ));
+}
+
+#[test]
+fn config_validate_rejects_invalid_election_timeout_range() {
+    let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    config.election_timeout_min_ticks = 5;
+    config.election_timeout_max_ticks = 5;
+
+    let err = config.validate().unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::InvalidElectionTimeoutRange {
+            election_timeout_min_ticks: 5,
+            election_timeout_max_ticks: 5,
+        }
+    ));
+}
+
+#[test]
+fn config_validate_rejects_self_in_peers() {
+    let config = Config::new(nid(1), [nid(1), nid(2)]);
+
+    let err = config.validate().unwrap_err();
+    assert!(matches!(err, ConfigError::PeersContainSelf { node_id } if node_id == nid(1)));
+}
+
 async fn wait_for_status<S, F>(node: &Node<S>, deadline: Duration, mut predicate: F) -> NodeStatus
 where
     S: StateMachine,
@@ -304,6 +345,31 @@ async fn bootstrap_new_cluster_uses_config_peers_authoritatively() {
     assert_eq!(status.peers, vec![nid(2), nid(3)]);
 
     node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn node_start_returns_config_error_for_invalid_config() {
+    let (transport, _handle) = TestTransport::new();
+    let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    config.election_timeout_min_ticks = 5;
+    config.election_timeout_max_ticks = 5;
+
+    let err = Node::start(
+        config,
+        Counter::default(),
+        MemoryStorage::<Vec<u8>>::default(),
+        transport,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        NodeStartError::Config(ConfigError::InvalidElectionTimeoutRange {
+            election_timeout_min_ticks: 5,
+            election_timeout_max_ticks: 5,
+        })
+    ));
 }
 
 #[tokio::test]
