@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use jotun_core::{
     Action, ConfigChange, Engine, Env, Event, Incoming, LogEntry, LogIndex, LogPayload, Message,
-    NodeId, RandomizedEnv, RoleState,
+    NodeId, RandomizedEnv, RoleState, Term,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -55,12 +55,50 @@ impl<S: StateMachine> Clone for Node<S> {
     }
 }
 
+/// How a node should come up at [`Node::start`] time.
+///
+/// Distinguishes the three legitimate boot scenarios so an operator
+/// can't, for example, accidentally boot a would-be joiner as a fresh
+/// single-node cluster — which would let it elect itself, commit
+/// entries, and then try to re-join a real cluster it diverged from.
+#[derive(Debug, Clone)]
+pub enum Bootstrap {
+    /// Initial cluster bring-up. The runtime trusts [`Config::peers`]
+    /// as the authoritative initial membership; every founding node
+    /// must be started with the same `members` set.
+    NewCluster {
+        /// The full initial cluster membership (self included).
+        members: Vec<NodeId>,
+    },
+    /// Join an already-running cluster. Starts with an empty peer set
+    /// regardless of [`Config::peers`]; the existing leader is
+    /// expected to call `add_peer` to splice us in.
+    Join,
+    /// Boot from persisted state after a crash or restart. The
+    /// runtime uses whatever membership the on-disk state implies,
+    /// falling back to [`Config::peers`] when there is no persisted
+    /// membership yet.
+    Recover,
+}
+
 /// Configuration for a [`Node`].
+///
+/// `max_pending_proposals` bounds how many in-flight `propose` /
+/// `add_peer` / `remove_peer` calls the driver will track at once.
+/// Once the combined count reaches the limit, new calls fail fast
+/// with [`ProposeError::Busy`] rather than queue unboundedly in the
+/// driver's reply map. 1024 is plenty of headroom for normal
+/// workloads; lower it if your callers can tolerate backpressure.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub node_id: NodeId,
     /// Initial peer set (excluding self). Membership changes go
     /// through `add_peer` / `remove_peer` after startup.
+    ///
+    /// Semantics depend on [`Self::bootstrap`]: `NewCluster` uses
+    /// this set as the authoritative initial membership, `Join`
+    /// ignores it (peer set starts empty), `Recover` falls back to
+    /// this set only when there is no persisted membership.
     pub peers: Vec<NodeId>,
     /// Lower bound of the election-timeout range, in ticks (inclusive).
     /// The runtime draws each timeout uniformly from
@@ -74,20 +112,95 @@ pub struct Config {
     pub heartbeat_interval_ticks: u64,
     /// Wall-clock duration of one engine tick.
     pub tick_interval: Duration,
+    /// How this node comes up. See [`Bootstrap`] for the three
+    /// scenarios.
+    pub bootstrap: Bootstrap,
+    /// Maximum number of in-flight proposals + config changes before
+    /// the driver rejects new calls with [`ProposeError::Busy`].
+    /// Defaults to 1024.
+    pub max_pending_proposals: usize,
 }
 
 impl Config {
     /// Sensible defaults for a development cluster.
+    ///
+    /// `bootstrap` defaults to [`Bootstrap::NewCluster`] when `peers`
+    /// is non-empty (multi-member cluster bring-up is the common
+    /// first-boot path) and to [`Bootstrap::Recover`] otherwise
+    /// (single-node cluster — safe to recover from whatever's on
+    /// disk, or self-elect if there's nothing there).
     pub fn new(node_id: NodeId, peers: impl IntoIterator<Item = NodeId>) -> Self {
+        let peers: Vec<NodeId> = peers.into_iter().collect();
+        let bootstrap = if peers.is_empty() {
+            Bootstrap::Recover
+        } else {
+            // NewCluster.members must include self — callers passed
+            // `peers` as the others; we reconstruct the full set.
+            let mut members = peers.clone();
+            members.push(node_id);
+            Bootstrap::NewCluster { members }
+        };
         Self {
             node_id,
-            peers: peers.into_iter().collect(),
+            peers,
             election_timeout_min_ticks: 10,
             election_timeout_max_ticks: 20,
             heartbeat_interval_ticks: 3,
             tick_interval: Duration::from_millis(50),
+            bootstrap,
+            max_pending_proposals: 1024,
         }
     }
+}
+
+/// The Raft role — Follower, Candidate, or Leader.
+///
+/// Exposed via [`Node::status`]. Deliberately a flat enum (no
+/// per-role payload) to keep the observability surface decoupled from
+/// `jotun_core`'s internal [`RoleState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Follower,
+    Candidate,
+    Leader,
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Follower => f.write_str("follower"),
+            Self::Candidate => f.write_str("candidate"),
+            Self::Leader => f.write_str("leader"),
+        }
+    }
+}
+
+/// A snapshot of a [`Node`]'s runtime state, returned by
+/// [`Node::status`].
+///
+/// Consistent with what the driver sees at the moment the status
+/// request is handled; not a live view — by the time the caller
+/// inspects it the node may have moved on.
+#[derive(Debug, Clone)]
+pub struct NodeStatus {
+    /// Our own node id, copied from [`Config::node_id`].
+    pub node_id: NodeId,
+    /// Current role.
+    pub role: Role,
+    /// Current Raft term (§5.1).
+    pub current_term: Term,
+    /// Highest log index known to be committed cluster-wide.
+    pub commit_index: LogIndex,
+    /// Highest log index the driver has handed to the state machine.
+    /// Always `<= commit_index`.
+    pub last_applied: LogIndex,
+    /// If we're a follower who has observed a current-term leader,
+    /// its id; `None` otherwise (candidate, leader, or a follower
+    /// that hasn't heard from anyone this term yet).
+    pub leader_hint: Option<NodeId>,
+    /// Active peer set (excluding self). Mutates as membership
+    /// changes land; see `Node::add_peer` / `remove_peer`.
+    pub peers: Vec<NodeId>,
 }
 
 /// Errors `propose` / `add_peer` / `remove_peer` can return.
@@ -104,6 +217,11 @@ pub enum ProposeError {
     /// The driver task died. Likely a bug or a fatal `Storage` /
     /// `StateMachine` error.
     DriverDead,
+    /// The driver's in-flight proposal queue is full
+    /// ([`Config::max_pending_proposals`] reached). Backpressure
+    /// signal: retry later, or adjust the limit upward if your
+    /// workload's concurrency is legitimately that high.
+    Busy,
 }
 
 impl std::fmt::Display for ProposeError {
@@ -113,6 +231,7 @@ impl std::fmt::Display for ProposeError {
             Self::NoLeader => write!(f, "no leader known yet"),
             Self::Shutdown => write!(f, "node is shutting down"),
             Self::DriverDead => write!(f, "node driver task died"),
+            Self::Busy => write!(f, "too many in-flight proposals; retry later"),
         }
     }
 }
@@ -156,6 +275,23 @@ impl<S: StateMachine> Node<S> {
     {
         let recovered = storage.recover().await.map_err(NodeStartError::Storage)?;
 
+        // Resolve the initial peer set from the Bootstrap variant.
+        //  - NewCluster: trust `members`, drop self (Engine::new filters
+        //    self anyway, but we're explicit).
+        //  - Join: empty — the existing leader will splice us in.
+        //  - Recover: use config.peers as a fallback seed; any
+        //    persisted ConfigChange entries will be replayed during
+        //    hydrate_engine and mutate the set into its real shape.
+        let initial_peers: Vec<NodeId> = match &config.bootstrap {
+            Bootstrap::NewCluster { members } => members
+                .iter()
+                .copied()
+                .filter(|p| *p != config.node_id)
+                .collect(),
+            Bootstrap::Join => Vec::new(),
+            Bootstrap::Recover => config.peers.clone(),
+        };
+
         // Build a fresh engine. We'll feed it the recovered state via
         // synthetic events inside the driver before processing any
         // user inputs — same approach the sim harness uses for crash
@@ -174,10 +310,12 @@ impl<S: StateMachine> Node<S> {
         ));
         let engine: Engine<Vec<u8>> = Engine::new(
             config.node_id,
-            config.peers.iter().copied(),
+            initial_peers.iter().copied(),
             env,
             config.heartbeat_interval_ticks,
         );
+
+        let max_pending_proposals = config.max_pending_proposals;
 
         let (inputs_tx, inputs_rx) = mpsc::channel::<DriverInput<S>>(1024);
 
@@ -206,6 +344,8 @@ impl<S: StateMachine> Node<S> {
             inputs: inputs_rx,
             pending_proposals: HashMap::new(),
             pending_config_changes: HashMap::new(),
+            max_pending_proposals,
+            last_applied: LogIndex::ZERO,
         };
         let _driver: JoinHandle<()> = tokio::spawn(driver_loop(driver_state, recovered));
 
@@ -261,6 +401,29 @@ impl<S: StateMachine> Node<S> {
         }
     }
 
+    /// Snapshot the node's current runtime state. Cheap — the driver
+    /// just reads from its own engine and replies.
+    ///
+    /// The returned status is a point-in-time view; the node may have
+    /// changed role, advanced its term, or mutated membership by the
+    /// time the caller inspects it. Use it for dashboards, health
+    /// checks, and debugging, not for correctness-critical logic.
+    pub async fn status(&self) -> Result<NodeStatus, ProposeError> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .inputs
+            .send(DriverInput::Status { reply: tx })
+            .await
+            .is_err()
+        {
+            return Err(ProposeError::Shutdown);
+        }
+        match rx.await {
+            Ok(s) => Ok(s),
+            Err(_) => Err(ProposeError::DriverDead),
+        }
+    }
+
     /// Initiate a graceful shutdown. Returns once the driver has
     /// drained any in-flight work and all background tasks have
     /// exited.
@@ -297,6 +460,14 @@ struct Driver<S: StateMachine, St, Tr> {
     /// Index in the log → user oneshot to fire when a `ConfigChange`
     /// entry applies (commits).
     pending_config_changes: HashMap<LogIndex, oneshot::Sender<Result<(), ProposeError>>>,
+    /// Combined cap on in-flight proposals + config changes. Keeps the
+    /// reply maps from growing unboundedly under load.
+    max_pending_proposals: usize,
+    /// Highest log index the driver has fed into the state machine.
+    /// Mirrors the engine's own `last_applied` but the engine doesn't
+    /// expose it publicly, so we track it from the Apply actions we
+    /// dispatch.
+    last_applied: LogIndex,
 }
 
 enum DriverInput<S: StateMachine> {
@@ -308,6 +479,9 @@ enum DriverInput<S: StateMachine> {
     ConfigChange {
         change: ConfigChange,
         reply: oneshot::Sender<Result<(), ProposeError>>,
+    },
+    Status {
+        reply: oneshot::Sender<NodeStatus>,
     },
     Shutdown {
         reply: oneshot::Sender<()>,
@@ -339,6 +513,9 @@ where
                     }
                     DriverInput::ConfigChange { change, reply } => {
                         handle_config_change(&mut d, change, reply).await;
+                    }
+                    DriverInput::Status { reply } => {
+                        let _ = reply.send(build_status(&d));
                     }
                     DriverInput::Shutdown { reply } => {
                         debug!(target = "jotun::node", "shutdown requested");
@@ -410,7 +587,7 @@ where
                 recovered
                     .log
                     .last()
-                    .map_or(jotun_core::Term::ZERO, |e| e.id.term)
+                    .map_or(Term::ZERO, |e| e.id.term)
             },
             |hs| hs.current_term,
         );
@@ -436,6 +613,14 @@ async fn handle_propose<S, St, Tr>(
     St: Storage<Vec<u8>>,
     Tr: Transport<Vec<u8>>,
 {
+    // Backpressure: the reply maps are unbounded by design (we keep a
+    // waiter around until the entry commits+applies), so without a
+    // cap a flood of proposals could OOM the driver. Reject fast
+    // before we even touch the engine.
+    if d.pending_proposals.len() + d.pending_config_changes.len() >= d.max_pending_proposals {
+        let _ = reply.send(Err(ProposeError::Busy));
+        return;
+    }
     // Encode the command, then drive ClientProposal. The next
     // PersistLogEntries action (if any) tells us the assigned index;
     // we register the reply oneshot at that index.
@@ -478,6 +663,10 @@ async fn handle_config_change<S, St, Tr>(
     St: Storage<Vec<u8>>,
     Tr: Transport<Vec<u8>>,
 {
+    if d.pending_proposals.len() + d.pending_config_changes.len() >= d.max_pending_proposals {
+        let _ = reply.send(Err(ProposeError::Busy));
+        return;
+    }
     let last_before = d
         .engine
         .log()
@@ -580,9 +769,22 @@ where
             }
             Action::Apply(entries) => {
                 apply_entries(d, entries);
+                // Engine advances its own last_applied to commit_index
+                // whenever it drains Apply, including past filtered-out
+                // Noop/ConfigChange entries. Mirror that here so
+                // NodeStatus.last_applied matches.
+                if d.engine.commit_index() > d.last_applied {
+                    d.last_applied = d.engine.commit_index();
+                }
             }
             Action::ApplySnapshot { bytes } => {
                 d.state_machine.restore(bytes);
+                // A snapshot advances applied to the snapshot's tail.
+                // commit_index is updated to at least that index inside
+                // on_install_snapshot_request, so it's the right ceiling.
+                if d.engine.commit_index() > d.last_applied {
+                    d.last_applied = d.engine.commit_index();
+                }
             }
             Action::Redirect { .. } => {
                 // Already handled at the propose call site; engine
@@ -591,6 +793,28 @@ where
         }
     }
     Ok(())
+}
+
+fn build_status<S, St, Tr>(d: &Driver<S, St, Tr>) -> NodeStatus
+where
+    S: StateMachine,
+    St: Storage<Vec<u8>>,
+    Tr: Transport<Vec<u8>>,
+{
+    let (role, leader_hint) = match d.engine.role() {
+        RoleState::Follower(f) => (Role::Follower, f.leader_id()),
+        RoleState::Candidate(_) => (Role::Candidate, None),
+        RoleState::Leader(_) => (Role::Leader, None),
+    };
+    NodeStatus {
+        node_id: d.node_id,
+        role,
+        current_term: d.engine.current_term(),
+        commit_index: d.engine.commit_index(),
+        last_applied: d.last_applied,
+        leader_hint,
+        peers: d.engine.peers().iter().copied().collect(),
+    }
 }
 
 fn apply_entries<S, St, Tr>(d: &mut Driver<S, St, Tr>, entries: Vec<LogEntry<Vec<u8>>>)
