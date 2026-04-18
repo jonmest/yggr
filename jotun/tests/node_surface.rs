@@ -22,6 +22,8 @@ use jotun_core::{
 };
 use tokio::sync::mpsc;
 
+type SentMessages = Arc<Mutex<Vec<(NodeId, Message<Vec<u8>>)>>>;
+
 #[derive(Debug, Default)]
 struct Counter {
     value: u64,
@@ -94,9 +96,11 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
             if i <= snap_floor {
                 continue;
             }
-            let local_idx = (i - snap_floor - 1) as usize;
-            if local_idx < self.log.len() {
-                self.log[local_idx] = entry;
+            let Ok(local_idx) = usize::try_from(i - snap_floor - 1) else {
+                continue;
+            };
+            if let Some(slot) = self.log.get_mut(local_idx) {
+                *slot = entry;
             } else {
                 self.log.push(entry);
             }
@@ -109,7 +113,9 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
             .snapshot
             .as_ref()
             .map_or(0, |s| s.last_included_index.get());
-        let local = from.get().saturating_sub(snap_floor + 1) as usize;
+        let Ok(local) = usize::try_from(from.get().saturating_sub(snap_floor + 1)) else {
+            return Ok(());
+        };
         if local < self.log.len() {
             self.log.truncate(local);
         }
@@ -117,7 +123,11 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
     }
 
     async fn persist_snapshot(&mut self, snap: StoredSnapshot) -> Result<(), Self::Error> {
-        let drop_through = snap.last_included_index.get() as usize;
+        let Ok(drop_through) = usize::try_from(snap.last_included_index.get()) else {
+            self.log.clear();
+            self.snapshot = Some(snap);
+            return Ok(());
+        };
         let keep_from = drop_through.min(self.log.len());
         self.log.drain(..keep_from);
         self.snapshot = Some(snap);
@@ -128,13 +138,13 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
 #[derive(Debug)]
 struct TestTransport {
     inbound: mpsc::Receiver<Incoming<Vec<u8>>>,
-    sent: Arc<Mutex<Vec<(NodeId, Message<Vec<u8>>)>>> ,
+    sent: SentMessages,
 }
 
 #[derive(Clone, Debug)]
 struct TestTransportHandle {
     inbound: mpsc::Sender<Incoming<Vec<u8>>>,
-    sent: Arc<Mutex<Vec<(NodeId, Message<Vec<u8>>)>>> ,
+    sent: SentMessages,
 }
 
 impl TestTransport {

@@ -382,9 +382,8 @@ impl<S: StateMachine> Node<S> {
         //    persisted ConfigChange entries will be replayed during
         //    hydrate_engine and mutate the set into its real shape.
         let initial_peers: Vec<NodeId> = match &config.bootstrap {
-            Bootstrap::NewCluster { .. } => config.peers.clone(),
             Bootstrap::Join => Vec::new(),
-            Bootstrap::Recover => config.peers.clone(),
+            Bootstrap::NewCluster { .. } | Bootstrap::Recover => config.peers.clone(),
         };
 
         // Build a fresh engine. We'll feed it the recovered state via
@@ -533,7 +532,11 @@ impl<S: StateMachine> Node<S> {
             .await
             .is_ok();
 
-        let background = self.background.lock().unwrap().take();
+        let background = self
+            .background
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
 
         if shutdown_requested {
             match rx.await {

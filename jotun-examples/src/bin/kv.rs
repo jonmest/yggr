@@ -47,8 +47,9 @@
 //! `StateMachine` for your KV, ship it to [`jotun::Node::start`],
 //! accept client connections on a separate socket, marshal
 //! commands through `Node::propose`. Everything else — elections,
-//! replication, persistence, transport, snapshotting — the runtime
-//! handles.
+//! replication, persistence, transport, and incoming snapshot
+//! restore/install — the runtime handles. Snapshot creation is still
+//! application-driven today.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

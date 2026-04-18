@@ -187,7 +187,10 @@ where
             Ok((stream, _peer_addr)) => {
                 let inbound = inbound.clone();
                 let reader = tokio::spawn(read_frames::<C>(stream, inbound));
-                readers.lock().unwrap().push(reader);
+                readers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(reader);
             }
             Err(e) => {
                 warn!(target = "jotun::transport", error = %e, "accept failed");
@@ -330,7 +333,10 @@ impl<C> Drop for TcpTransport<C> {
         for writer in &self.writers {
             writer.abort();
         }
-        let mut readers = self.readers.lock().unwrap();
+        let mut readers = self
+            .readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for reader in readers.drain(..) {
             reader.abort();
         }
