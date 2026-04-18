@@ -21,6 +21,7 @@
 //! The driver is the only mutator of any shared state; no locks.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jotun_core::{
@@ -39,6 +40,7 @@ use crate::transport::Transport;
 /// clone shares the same underlying driver task.
 pub struct Node<S: StateMachine> {
     inputs: mpsc::Sender<DriverInput<S>>,
+    background: Arc<Mutex<Option<BackgroundTasks>>>,
 }
 
 impl<S: StateMachine> std::fmt::Debug for Node<S> {
@@ -51,8 +53,14 @@ impl<S: StateMachine> Clone for Node<S> {
     fn clone(&self) -> Self {
         Self {
             inputs: self.inputs.clone(),
+            background: Arc::clone(&self.background),
         }
     }
+}
+
+struct BackgroundTasks {
+    ticker: JoinHandle<()>,
+    driver: JoinHandle<()>,
 }
 
 /// How a node should come up at [`Node::start`] time.
@@ -333,7 +341,7 @@ impl<S: StateMachine> Node<S> {
         // does (the driver's drop closes it).
         let tick_inputs = inputs_tx.clone();
         let tick_interval = config.tick_interval;
-        let _ticker: JoinHandle<()> = tokio::spawn(async move {
+        let ticker: JoinHandle<()> = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tick_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
@@ -357,9 +365,12 @@ impl<S: StateMachine> Node<S> {
             max_pending_proposals,
             last_applied: LogIndex::ZERO,
         };
-        let _driver: JoinHandle<()> = tokio::spawn(driver_loop(driver_state, recovered));
+        let driver: JoinHandle<()> = tokio::spawn(driver_loop(driver_state, recovered));
 
-        Ok(Self { inputs: inputs_tx })
+        Ok(Self {
+            inputs: inputs_tx,
+            background: Arc::new(Mutex::new(Some(BackgroundTasks { ticker, driver }))),
+        })
     }
 
     /// Submit a command to the cluster. Returns once the command has
@@ -439,15 +450,33 @@ impl<S: StateMachine> Node<S> {
     /// exited.
     pub async fn shutdown(self) -> Result<(), ProposeError> {
         let (tx, rx) = oneshot::channel();
-        if self
+        let shutdown_requested = self
             .inputs
             .send(DriverInput::Shutdown { reply: tx })
             .await
-            .is_err()
-        {
-            return Ok(()); // already gone
+            .is_ok();
+
+        let background = self.background.lock().unwrap().take();
+
+        if shutdown_requested {
+            match rx.await {
+                Ok(()) => {}
+                Err(_) => return Err(ProposeError::DriverDead),
+            }
         }
-        match rx.await {
+
+        let Some(background) = background else {
+            return Ok(());
+        };
+        let BackgroundTasks { ticker, driver } = background;
+
+        ticker.abort();
+        match ticker.await {
+            Ok(()) => {}
+            Err(e) if e.is_cancelled() => {}
+            Err(_) => return Err(ProposeError::DriverDead),
+        }
+        match driver.await {
             Ok(()) => Ok(()),
             Err(_) => Err(ProposeError::DriverDead),
         }

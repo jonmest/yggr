@@ -114,6 +114,28 @@ async fn single_node_node_starts_and_shuts_down() {
 }
 
 #[tokio::test]
+async fn shutdown_releases_transport_listener_immediately() {
+    let tmp = TmpDir::new("shutdown-rebind");
+    let storage = DiskStorage::open(&tmp.0).await.unwrap();
+    let port = free_port();
+    let addr: SocketAddr = (Ipv4Addr::LOCALHOST, port).into();
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .unwrap();
+
+    let config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    let node = Node::start(config, Counter::default(), storage, transport)
+        .await
+        .unwrap();
+    node.shutdown().await.unwrap();
+
+    let rebound: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .expect("shutdown should release the listen port before returning");
+    drop(rebound);
+}
+
+#[tokio::test]
 async fn single_node_self_elects_and_applies_proposal() {
     let tmp = TmpDir::new("single-propose");
     let storage = DiskStorage::open(&tmp.0).await.unwrap();

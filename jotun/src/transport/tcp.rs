@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use jotun_core::transport::protobuf as proto;
@@ -33,7 +33,7 @@ use jotun_core::{Incoming, Message, NodeId};
 use prost::Message as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -45,8 +45,6 @@ struct PeerLink {
     addr: SocketAddr,
     /// Live tx side: hands frames off to the per-peer writer task.
     tx: mpsc::Sender<Vec<u8>>,
-    /// Held so the writer task lives as long as we do.
-    _writer: JoinHandle<()>,
 }
 
 /// Tokio-TCP-backed transport. Construct with [`Self::start`], which
@@ -58,11 +56,16 @@ pub struct TcpTransport<C> {
     /// Per-peer dial state. Mutex because [`Transport::send`] takes
     /// `&self` to keep the trait shape compact, but we need to mutate
     /// the map on lazy-reconnect.
-    peers: Arc<Mutex<BTreeMap<NodeId, PeerLink>>>,
+    peers: Arc<AsyncMutex<BTreeMap<NodeId, PeerLink>>>,
     /// Receiving half of the inbound channel.
     inbound: mpsc::Receiver<Incoming<C>>,
     /// Held so the listener task lives as long as we do.
-    _listener: JoinHandle<()>,
+    listener: JoinHandle<()>,
+    /// Outbound per-peer writer tasks.
+    writers: Vec<JoinHandle<()>>,
+    /// Inbound per-connection reader tasks, tracked so drop can abort
+    /// them promptly during shutdown.
+    readers: Arc<StdMutex<Vec<JoinHandle<()>>>>,
 }
 
 impl<C> std::fmt::Debug for TcpTransport<C> {
@@ -88,29 +91,39 @@ where
     ) -> io::Result<Self> {
         let listener = TcpListener::bind(listen_addr).await?;
         let (inbound_tx, inbound_rx) = mpsc::channel(1024);
+        let readers = Arc::new(StdMutex::new(Vec::new()));
 
-        let listener_task = tokio::spawn(accept_loop::<C>(listener, inbound_tx));
+        let listener_task = tokio::spawn(accept_loop::<C>(
+            listener,
+            inbound_tx,
+            Arc::clone(&readers),
+        ));
 
         let mut peer_map: BTreeMap<NodeId, PeerLink> = BTreeMap::new();
+        let mut writers = Vec::new();
         for (id, addr) in peers {
             if id == me {
                 continue;
             }
-            peer_map.insert(id, spawn_peer_link::<C>(me, id, addr));
+            let (link, writer) = spawn_peer_link::<C>(me, id, addr);
+            peer_map.insert(id, link);
+            writers.push(writer);
         }
 
         Ok(Self {
             me,
-            peers: Arc::new(Mutex::new(peer_map)),
+            peers: Arc::new(AsyncMutex::new(peer_map)),
             inbound: inbound_rx,
-            _listener: listener_task,
+            listener: listener_task,
+            writers,
+            readers,
         })
     }
 }
 
 /// Dedicated writer task per peer: reads frames from a channel,
 /// dials/redials TCP as needed, writes them out.
-fn spawn_peer_link<C>(me: NodeId, peer: NodeId, addr: SocketAddr) -> PeerLink
+fn spawn_peer_link<C>(me: NodeId, peer: NodeId, addr: SocketAddr) -> (PeerLink, JoinHandle<()>)
 where
     C: Send + 'static,
 {
@@ -157,15 +170,15 @@ where
             }
         }
     });
-    PeerLink {
-        addr,
-        tx,
-        _writer: writer,
-    }
+    (PeerLink { addr, tx }, writer)
 }
 
 /// Listener task: accept inbound connections, spawn a reader for each.
-async fn accept_loop<C>(listener: TcpListener, inbound: mpsc::Sender<Incoming<C>>)
+async fn accept_loop<C>(
+    listener: TcpListener,
+    inbound: mpsc::Sender<Incoming<C>>,
+    readers: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+)
 where
     C: Send + From<Vec<u8>> + 'static,
 {
@@ -173,7 +186,8 @@ where
         match listener.accept().await {
             Ok((stream, _peer_addr)) => {
                 let inbound = inbound.clone();
-                tokio::spawn(read_frames::<C>(stream, inbound));
+                let reader = tokio::spawn(read_frames::<C>(stream, inbound));
+                readers.lock().unwrap().push(reader);
             }
             Err(e) => {
                 warn!(target = "jotun::transport", error = %e, "accept failed");
@@ -309,6 +323,19 @@ impl std::fmt::Display for TcpTransportError {
 }
 
 impl std::error::Error for TcpTransportError {}
+
+impl<C> Drop for TcpTransport<C> {
+    fn drop(&mut self) {
+        self.listener.abort();
+        for writer in &self.writers {
+            writer.abort();
+        }
+        let mut readers = self.readers.lock().unwrap();
+        for reader in readers.drain(..) {
+            reader.abort();
+        }
+    }
+}
 
 // Make PeerLink fields used so dead_code doesn't fire.
 #[allow(dead_code)]
