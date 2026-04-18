@@ -16,7 +16,9 @@
 //! `engine.step` and dispatches every emitted [`Action`] in order:
 //! Persists go to Storage, Sends go to Transport, Applies go to
 //! the `StateMachine` (with replies to pending [`Node::propose`] futures),
-//! Redirects fail any matching pending propose with `NotLeader`.
+//! Redirects fail any matching pending propose with `NotLeader`. On
+//! explicit shutdown the driver also asks the transport to stop any
+//! background tasks it owns before exiting.
 //!
 //! The driver is the only mutator of any shared state; no locks.
 
@@ -522,7 +524,8 @@ impl<S: StateMachine> Node<S> {
     }
 
     /// Initiate a graceful shutdown. Returns once the driver has
-    /// drained any in-flight work and all background tasks have
+    /// drained any in-flight work, the transport has stopped its own
+    /// background tasks, and the runtime's ticker/driver tasks have
     /// exited.
     pub async fn shutdown(self) -> Result<(), ProposeError> {
         let (tx, rx) = oneshot::channel();
@@ -635,6 +638,7 @@ where
                     }
                     DriverInput::Shutdown { reply } => {
                         debug!(target = "jotun::node", "shutdown requested");
+                        d.transport.shutdown().await;
                         let _ = reply.send(());
                         return;
                     }

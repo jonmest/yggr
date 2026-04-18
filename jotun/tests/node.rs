@@ -18,6 +18,8 @@ use std::time::Duration;
 use jotun::{
     Config, DecodeError, DiskStorage, Node, NodeId, ProposeError, StateMachine, TcpTransport,
 };
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
 
 // ---------------------------------------------------------------------------
 // Toy state machine: a counter command stream.
@@ -127,7 +129,22 @@ async fn shutdown_releases_transport_listener_immediately() {
     let node = Node::start(config, Counter::default(), storage, transport)
         .await
         .unwrap();
+
+    // Hold an active peer-side connection open so shutdown has to
+    // tear down an accepted reader task, not just the listener.
+    let mut peer = TcpStream::connect(addr).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
     node.shutdown().await.unwrap();
+
+    let mut buf = [0u8; 1];
+    let read_result = tokio::time::timeout(Duration::from_secs(1), peer.read(&mut buf))
+        .await
+        .expect("shutdown should close accepted peer connections promptly");
+    assert!(
+        matches!(read_result, Ok(0)) || read_result.is_err(),
+        "expected EOF or connection reset after shutdown, got {read_result:?}"
+    );
 
     let rebound: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
         .await

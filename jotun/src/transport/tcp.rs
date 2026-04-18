@@ -60,7 +60,7 @@ pub struct TcpTransport<C> {
     /// Receiving half of the inbound channel.
     inbound: mpsc::Receiver<Incoming<C>>,
     /// Held so the listener task lives as long as we do.
-    listener: JoinHandle<()>,
+    listener: Option<JoinHandle<()>>,
     /// Outbound per-peer writer tasks.
     writers: Vec<JoinHandle<()>>,
     /// Inbound per-connection reader tasks, tracked so drop can abort
@@ -114,10 +114,40 @@ where
             me,
             peers: Arc::new(AsyncMutex::new(peer_map)),
             inbound: inbound_rx,
-            listener: listener_task,
+            listener: Some(listener_task),
             writers,
             readers,
         })
+    }
+
+    async fn shutdown_owned_tasks(&mut self) {
+        if let Some(listener) = self.listener.take() {
+            abort_and_join(listener).await;
+        }
+
+        for writer in std::mem::take(&mut self.writers) {
+            abort_and_join(writer).await;
+        }
+
+        let readers: Vec<JoinHandle<()>> = {
+            let mut readers = self
+                .readers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            readers.drain(..).collect()
+        };
+        for reader in readers {
+            abort_and_join(reader).await;
+        }
+    }
+}
+
+async fn abort_and_join(handle: JoinHandle<()>) {
+    handle.abort();
+    match handle.await {
+        Ok(()) => {}
+        Err(e) if e.is_cancelled() => {}
+        Err(e) => debug!(target = "jotun::transport", error = %e, "background task exited with error during shutdown"),
     }
 }
 
@@ -298,6 +328,10 @@ where
     async fn recv(&mut self) -> Option<Incoming<C>> {
         self.inbound.recv().await
     }
+
+    async fn shutdown(&mut self) {
+        self.shutdown_owned_tasks().await;
+    }
 }
 
 /// Errors returned by [`TcpTransport`].
@@ -329,7 +363,9 @@ impl std::error::Error for TcpTransportError {}
 
 impl<C> Drop for TcpTransport<C> {
     fn drop(&mut self) {
-        self.listener.abort();
+        if let Some(listener) = self.listener.take() {
+            listener.abort();
+        }
         for writer in &self.writers {
             writer.abort();
         }

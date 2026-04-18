@@ -48,4 +48,12 @@ where
     /// authenticated sender — `Incoming::from` is the source of
     /// truth the engine relies on.
     fn recv(&mut self) -> impl Future<Output = Option<Incoming<C>>> + Send;
+
+    /// Best-effort graceful shutdown hook. The runtime calls this
+    /// during [`crate::Node::shutdown`] before the driver exits so
+    /// transport implementations can stop and join any background
+    /// tasks they own. Default: nothing to do.
+    fn shutdown(&mut self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
