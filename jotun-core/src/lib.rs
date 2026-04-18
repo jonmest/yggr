@@ -34,7 +34,7 @@ pub mod types;
 
 pub use engine::action::Action;
 pub use engine::engine::Engine;
-pub use engine::env::{Env, StaticEnv};
+pub use engine::env::{Env, RandomizedEnv, StaticEnv};
 pub use engine::event::Event;
 pub use engine::incoming::Incoming;
 pub use engine::role_state::{CandidateState, FollowerState, LeaderState, RoleState};

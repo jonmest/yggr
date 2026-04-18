@@ -119,7 +119,8 @@ async fn single_node_self_elects_and_applies_proposal() {
 
     let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
     // Smaller intervals so the self-election fires fast in tests.
-    config.election_timeout_ticks = 3;
+    config.election_timeout_min_ticks = 3;
+    config.election_timeout_max_ticks = 5;
     config.heartbeat_interval_ticks = 1;
     config.tick_interval = Duration::from_millis(10);
 

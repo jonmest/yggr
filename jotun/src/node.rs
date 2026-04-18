@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use jotun_core::{
     Action, ConfigChange, Engine, Env, Event, Incoming, LogEntry, LogIndex, LogPayload, Message,
-    NodeId, RoleState, StaticEnv,
+    NodeId, RandomizedEnv, RoleState,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -62,13 +62,15 @@ pub struct Config {
     /// Initial peer set (excluding self). Membership changes go
     /// through `add_peer` / `remove_peer` after startup.
     pub peers: Vec<NodeId>,
-    /// Election timeout in ticks. The engine resets within this on
-    /// every reset (§5.2 randomization). Default `Env` is fixed; users
-    /// who want randomized timeouts can supply their own — coming in
-    /// a later refactor.
-    pub election_timeout_ticks: u64,
-    /// Heartbeat interval in ticks. Must be smaller than election
-    /// timeout per §5.2.
+    /// Lower bound of the election-timeout range, in ticks (inclusive).
+    /// The runtime draws each timeout uniformly from
+    /// `[election_timeout_min_ticks, election_timeout_max_ticks)` —
+    /// §5.2 randomization, prevents split votes.
+    pub election_timeout_min_ticks: u64,
+    /// Upper bound, exclusive. Must be strictly greater than min.
+    pub election_timeout_max_ticks: u64,
+    /// Heartbeat interval in ticks. Must be smaller than the election
+    /// timeout minimum per §5.2.
     pub heartbeat_interval_ticks: u64,
     /// Wall-clock duration of one engine tick.
     pub tick_interval: Duration,
@@ -80,7 +82,8 @@ impl Config {
         Self {
             node_id,
             peers: peers.into_iter().collect(),
-            election_timeout_ticks: 15,
+            election_timeout_min_ticks: 10,
+            election_timeout_max_ticks: 20,
             heartbeat_interval_ticks: 3,
             tick_interval: Duration::from_millis(50),
         }
@@ -157,7 +160,18 @@ impl<S: StateMachine> Node<S> {
         // synthetic events inside the driver before processing any
         // user inputs — same approach the sim harness uses for crash
         // recovery, and it keeps Engine's API as the only mutator.
-        let env: Box<dyn Env> = Box::new(StaticEnv(config.election_timeout_ticks));
+        // Seed the RNG from (wall clock, node id) so different nodes
+        // in the same cluster draw different timeouts. §5.2 relies on
+        // this randomization to break split votes.
+        let seed_nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(0));
+        let seed = seed_nanos.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ config.node_id.get();
+        let env: Box<dyn Env> = Box::new(RandomizedEnv::new(
+            seed,
+            config.election_timeout_min_ticks,
+            config.election_timeout_max_ticks,
+        ));
         let engine: Engine<Vec<u8>> = Engine::new(
             config.node_id,
             config.peers.iter().copied(),
