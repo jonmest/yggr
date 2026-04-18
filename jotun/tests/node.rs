@@ -178,3 +178,71 @@ async fn shutdown_handle_after_first_use_returns_shutdown_error() {
         ProposeError::Shutdown | ProposeError::DriverDead
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Fatal error propagation: a StateMachine whose decode_command rejects
+// every input triggers the fatal path as soon as a committed entry
+// reaches Apply. Any in-flight proposal on the same driver fails with
+// ProposeError::Fatal (not a silent stall).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+struct BrokenSm;
+
+#[derive(Debug, Clone)]
+struct BrokenCmd;
+
+impl StateMachine for BrokenSm {
+    type Command = BrokenCmd;
+    type Response = ();
+
+    fn encode_command(_: &BrokenCmd) -> Vec<u8> {
+        // Still serialize to something — the leader appends, replicates,
+        // commits, and hands it back on Apply where decode fires.
+        b"payload".to_vec()
+    }
+
+    fn decode_command(_: &[u8]) -> Result<BrokenCmd, DecodeError> {
+        // Always fail. Simulates corrupt storage handing the state
+        // machine garbage it can't decode — a real fatal runtime error.
+        Err(DecodeError::new("intentional test-only decode failure"))
+    }
+
+    fn apply(&mut self, _: BrokenCmd) {}
+}
+
+#[tokio::test]
+async fn decode_failure_on_apply_fails_waiter_with_fatal() {
+    let tmp = TmpDir::new("fatal-decode");
+    let storage = DiskStorage::open(&tmp.0).await.unwrap();
+    let port = free_port();
+    let addr: SocketAddr = (Ipv4Addr::LOCALHOST, port).into();
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .unwrap();
+
+    let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    config.election_timeout_min_ticks = 3;
+    config.election_timeout_max_ticks = 5;
+    config.heartbeat_interval_ticks = 1;
+    config.tick_interval = Duration::from_millis(10);
+
+    let node = Node::start(config, BrokenSm, storage, transport)
+        .await
+        .unwrap();
+
+    // Wait for self-election (single-node cluster).
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The proposal will commit (no peers to ack means the engine's
+    // try_advance_commit_as_leader fires), apply will try to decode,
+    // decode will fail, driver fails the waiter with Fatal.
+    let err = tokio::time::timeout(Duration::from_secs(2), node.propose(BrokenCmd))
+        .await
+        .expect("propose did not resolve — waiter leaked")
+        .expect_err("broken state machine should have failed the proposal");
+    assert!(
+        matches!(err, ProposeError::Fatal { .. }),
+        "expected Fatal, got {err:?}",
+    );
+}

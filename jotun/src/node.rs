@@ -222,6 +222,15 @@ pub enum ProposeError {
     /// signal: retry later, or adjust the limit upward if your
     /// workload's concurrency is legitimately that high.
     Busy,
+    /// A non-recoverable error hit the runtime: a `Storage` write
+    /// failed, the state machine couldn't decode a committed
+    /// command (corrupt log), or similar. The driver has shut
+    /// itself down after failing every in-flight proposal with
+    /// this error — the caller's next call will see `Shutdown` or
+    /// `DriverDead`.
+    Fatal {
+        reason: &'static str,
+    },
 }
 
 impl std::fmt::Display for ProposeError {
@@ -232,6 +241,7 @@ impl std::fmt::Display for ProposeError {
             Self::Shutdown => write!(f, "node is shutting down"),
             Self::DriverDead => write!(f, "node driver task died"),
             Self::Busy => write!(f, "too many in-flight proposals; retry later"),
+            Self::Fatal { reason } => write!(f, "fatal runtime error: {reason}"),
         }
     }
 }
@@ -499,23 +509,20 @@ where
     hydrate_engine(&mut d, &recovered);
 
     loop {
-        tokio::select! {
+        let result: Result<(), Fatal> = tokio::select! {
             input = d.inputs.recv() => {
                 let Some(input) = input else { return };
                 match input {
-                    DriverInput::Tick => {
-                        if let Err(()) = step_and_dispatch(&mut d, Event::Tick).await {
-                            return;
-                        }
-                    }
+                    DriverInput::Tick => step_and_dispatch(&mut d, Event::Tick).await,
                     DriverInput::Propose { command, reply } => {
-                        handle_propose(&mut d, command, reply).await;
+                        handle_propose(&mut d, command, reply).await
                     }
                     DriverInput::ConfigChange { change, reply } => {
-                        handle_config_change(&mut d, change, reply).await;
+                        handle_config_change(&mut d, change, reply).await
                     }
                     DriverInput::Status { reply } => {
                         let _ = reply.send(build_status(&d));
+                        Ok(())
                     }
                     DriverInput::Shutdown { reply } => {
                         debug!(target = "jotun::node", "shutdown requested");
@@ -529,10 +536,12 @@ where
                     warn!(target = "jotun::node", "transport recv returned None; shutting down");
                     return;
                 };
-                if let Err(()) = step_and_dispatch(&mut d, Event::Incoming(incoming)).await {
-                    return;
-                }
+                step_and_dispatch(&mut d, Event::Incoming(incoming)).await
             }
+        };
+        if let Err(Fatal { reason }) = result {
+            fail_all_pending(&mut d, reason);
+            return;
         }
     }
 }
@@ -608,7 +617,8 @@ async fn handle_propose<S, St, Tr>(
     d: &mut Driver<S, St, Tr>,
     command: S::Command,
     reply: oneshot::Sender<Result<S::Response, ProposeError>>,
-) where
+) -> Result<(), Fatal>
+where
     S: StateMachine,
     St: Storage<Vec<u8>>,
     Tr: Transport<Vec<u8>>,
@@ -619,7 +629,7 @@ async fn handle_propose<S, St, Tr>(
     // before we even touch the engine.
     if d.pending_proposals.len() + d.pending_config_changes.len() >= d.max_pending_proposals {
         let _ = reply.send(Err(ProposeError::Busy));
-        return;
+        return Ok(());
     }
     // Encode the command, then drive ClientProposal. The next
     // PersistLogEntries action (if any) tells us the assigned index;
@@ -651,21 +661,22 @@ async fn handle_propose<S, St, Tr>(
         let _ = reply.send(Err(err));
     }
 
-    let _ = dispatch_actions(d, actions).await;
+    dispatch_actions(d, actions).await
 }
 
 async fn handle_config_change<S, St, Tr>(
     d: &mut Driver<S, St, Tr>,
     change: ConfigChange,
     reply: oneshot::Sender<Result<(), ProposeError>>,
-) where
+) -> Result<(), Fatal>
+where
     S: StateMachine,
     St: Storage<Vec<u8>>,
     Tr: Transport<Vec<u8>>,
 {
     if d.pending_proposals.len() + d.pending_config_changes.len() >= d.max_pending_proposals {
         let _ = reply.send(Err(ProposeError::Busy));
-        return;
+        return Ok(());
     }
     let last_before = d
         .engine
@@ -691,16 +702,25 @@ async fn handle_config_change<S, St, Tr>(
         });
         let _ = reply.send(Err(err));
     }
-    let _ = dispatch_actions(d, actions).await;
+    dispatch_actions(d, actions).await
+}
+
+/// A non-recoverable runtime error. Caught at every layer above
+/// dispatch and propagated up to [`driver_loop`], which fails every
+/// in-flight waiter with [`ProposeError::Fatal`] before exiting.
+#[derive(Debug, Clone, Copy)]
+struct Fatal {
+    reason: &'static str,
 }
 
 /// Drive the engine with `event`, dispatch every emitted action.
-/// Returns `Err(())` only on a fatal Storage / Transport failure
-/// the driver can't recover from — caller exits the loop.
+/// Fatal errors (Storage write failures, committed-command decode
+/// failures) propagate up; [`driver_loop`] exits after failing
+/// pending waiters.
 async fn step_and_dispatch<S, St, Tr>(
     d: &mut Driver<S, St, Tr>,
     event: Event<Vec<u8>>,
-) -> Result<(), ()>
+) -> Result<(), Fatal>
 where
     S: StateMachine,
     St: Storage<Vec<u8>>,
@@ -713,7 +733,7 @@ where
 async fn dispatch_actions<S, St, Tr>(
     d: &mut Driver<S, St, Tr>,
     actions: Vec<Action<Vec<u8>>>,
-) -> Result<(), ()>
+) -> Result<(), Fatal>
 where
     S: StateMachine,
     St: Storage<Vec<u8>>,
@@ -734,13 +754,17 @@ where
                     .await
                 {
                     error!(target = "jotun::node", error = %e, "fatal: persist_hard_state failed");
-                    return Err(());
+                    return Err(Fatal {
+                        reason: "persist_hard_state failed",
+                    });
                 }
             }
             Action::PersistLogEntries(entries) => {
                 if let Err(e) = d.storage.append_log(entries).await {
                     error!(target = "jotun::node", error = %e, "fatal: append_log failed");
-                    return Err(());
+                    return Err(Fatal {
+                        reason: "append_log failed",
+                    });
                 }
             }
             Action::PersistSnapshot {
@@ -758,7 +782,9 @@ where
                     .await
                 {
                     error!(target = "jotun::node", error = %e, "fatal: persist_snapshot failed");
-                    return Err(());
+                    return Err(Fatal {
+                        reason: "persist_snapshot failed",
+                    });
                 }
             }
             Action::Send { to, message } => {
@@ -768,7 +794,7 @@ where
                 }
             }
             Action::Apply(entries) => {
-                apply_entries(d, entries);
+                apply_entries(d, entries)?;
                 // Engine advances its own last_applied to commit_index
                 // whenever it drains Apply, including past filtered-out
                 // Noop/ConfigChange entries. Mirror that here so
@@ -817,7 +843,10 @@ where
     }
 }
 
-fn apply_entries<S, St, Tr>(d: &mut Driver<S, St, Tr>, entries: Vec<LogEntry<Vec<u8>>>)
+fn apply_entries<S, St, Tr>(
+    d: &mut Driver<S, St, Tr>,
+    entries: Vec<LogEntry<Vec<u8>>>,
+) -> Result<(), Fatal>
 where
     S: StateMachine,
     St: Storage<Vec<u8>>,
@@ -835,9 +864,12 @@ where
                 Err(e) => {
                     error!(target = "jotun::node", error = %e, index = ?entry.id.index,
                            "fatal: failed to decode committed command");
-                    // Bail the entire driver — the only way to fail
-                    // a decode is corrupt storage, which is fatal.
-                    return;
+                    // Corrupt log — a committed entry must decode.
+                    // Propagate so driver_loop fails pending waiters
+                    // and exits.
+                    return Err(Fatal {
+                        reason: "failed to decode committed command",
+                    });
                 }
             };
             let response = d.state_machine.apply(cmd);
@@ -895,4 +927,28 @@ where
     // unused for now — silences dead import warnings the compiler
     // might otherwise raise across feature combos.
     let _ = d.node_id;
+    Ok(())
+}
+
+/// Fail every in-flight proposal and config-change waiter with
+/// `ProposeError::Fatal { reason }`. Called from [`driver_loop`]
+/// right before it exits on a fatal error.
+fn fail_all_pending<S, St, Tr>(d: &mut Driver<S, St, Tr>, reason: &'static str)
+where
+    S: StateMachine,
+    St: Storage<Vec<u8>>,
+    Tr: Transport<Vec<u8>>,
+{
+    let indices: Vec<LogIndex> = d.pending_proposals.keys().copied().collect();
+    for idx in indices {
+        if let Some(reply) = d.pending_proposals.remove(&idx) {
+            let _ = reply.send(Err(ProposeError::Fatal { reason }));
+        }
+    }
+    let indices: Vec<LogIndex> = d.pending_config_changes.keys().copied().collect();
+    for idx in indices {
+        if let Some(reply) = d.pending_config_changes.remove(&idx) {
+            let _ = reply.send(Err(ProposeError::Fatal { reason }));
+        }
+    }
 }
