@@ -332,8 +332,29 @@ impl<C: Clone + PartialEq> SafetyChecker<C> {
                 continue;
             }
             let leader_term = engine.current_term();
+            let snapshot_floor = engine.log().snapshot_last().index;
             for (idx, committed_entry) in &self.committed_entries {
                 if committed_entry.id.term >= leader_term {
+                    continue;
+                }
+                // An entry at or below the leader's snapshot floor is
+                // captured by the snapshot; the leader holds it
+                // durably even though entry_at() returns None. Only
+                // check agreement at the floor itself (term must
+                // match) — below the floor we trust the snapshot
+                // contract.
+                if *idx < snapshot_floor {
+                    continue;
+                }
+                if *idx == snapshot_floor {
+                    if engine.log().snapshot_last().term != committed_entry.id.term {
+                        return Err(SafetyViolation::LeaderMissingCommitted {
+                            leader: engine.id(),
+                            leader_term,
+                            committed_term: committed_entry.id.term,
+                            index: *idx,
+                        });
+                    }
                     continue;
                 }
                 match engine.log().entry_at(*idx) {

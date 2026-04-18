@@ -12,6 +12,11 @@ impl From<RequestInstallSnapshot> for proto::RequestInstallSnapshot {
             last_included: Some(v.last_included.into()),
             data: v.data,
             leader_commit: v.leader_commit.get(),
+            peers: v
+                .peers
+                .into_iter()
+                .map(|id| proto::NodeIdRef { id: id.get() })
+                .collect(),
         }
     }
 }
@@ -20,6 +25,10 @@ impl TryFrom<proto::RequestInstallSnapshot> for RequestInstallSnapshot {
     type Error = ConvertError;
 
     fn try_from(v: proto::RequestInstallSnapshot) -> Result<Self, Self::Error> {
+        let mut peers = std::collections::BTreeSet::new();
+        for p in v.peers {
+            peers.insert(NodeId::new(p.id).ok_or(ConvertError::ZeroNodeId)?);
+        }
         Ok(Self {
             term: Term::new(v.term),
             leader_id: NodeId::new(v.leader_id).ok_or(ConvertError::ZeroNodeId)?,
@@ -31,6 +40,7 @@ impl TryFrom<proto::RequestInstallSnapshot> for RequestInstallSnapshot {
                 .try_into()?,
             data: v.data,
             leader_commit: LogIndex::new(v.leader_commit),
+            peers,
         })
     }
 }

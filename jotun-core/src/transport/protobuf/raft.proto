@@ -92,6 +92,11 @@ message RequestInstallSnapshot {
   // Same role as in AppendEntries: the leader's commit_index, used
   // by the follower to advance its own commit_index.
   uint64 leader_commit = 5;
+  // Cluster membership as of last_included. Snapshot compaction
+  // drops the committed ConfigChange entries that established this
+  // config; carrying the set here is how the follower restores the
+  // right config on install.
+  repeated NodeIdRef peers = 6;
 }
 
 message InstallSnapshotResponse {

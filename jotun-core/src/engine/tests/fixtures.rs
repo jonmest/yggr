@@ -304,6 +304,7 @@ pub(super) fn install_snapshot_from(
             last_included: log_id(last_included_index, last_included_term),
             data: bytes,
             leader_commit: LogIndex::new(leader_commit),
+            peers: std::collections::BTreeSet::new(),
         }),
     })
 }
@@ -326,6 +327,7 @@ pub(super) fn collect_persist_snapshots(
                 last_included_index,
                 last_included_term,
                 bytes,
+                ..
             } => Some((*last_included_index, *last_included_term, bytes.clone())),
             _ => None,
         })

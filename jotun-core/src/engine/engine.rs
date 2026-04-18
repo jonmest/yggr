@@ -73,9 +73,13 @@ pub(crate) struct RaftState<C> {
     pub(crate) initial_peers: BTreeSet<NodeId>,
     /// Bytes of the most recent snapshot, if any. Held in memory so a
     /// leader can include them in `InstallSnapshot` RPCs without going
-    /// back to the host. Pass-1: just stored after `SnapshotTaken`;
-    /// pass-2 will read from here to populate outbound RPCs.
+    /// back to the host.
     pub(crate) snapshot_bytes: Option<Vec<u8>>,
+    /// Cluster membership as of the most recent snapshot's tail.
+    /// Shipped alongside `snapshot_bytes` in outbound
+    /// `InstallSnapshot` RPCs so receivers can restore the right
+    /// config on install.
+    pub(crate) snapshot_peers: Option<BTreeSet<NodeId>>,
 }
 
 /// What the host hands back to [`Engine::recover_from`] at boot:
@@ -100,10 +104,17 @@ pub struct RecoveredHardState<C> {
 }
 
 /// The durable snapshot piece of [`RecoveredHardState`].
+///
+/// `peers` is the cluster membership as of `last_included_index`,
+/// encoded alongside the state-machine bytes so membership survives
+/// snapshot install and compaction. Without it, a node that snapshots
+/// after a committed `AddPeer` / `RemovePeer` would revert to the
+/// bootstrap config on restart and compute the wrong majority.
 #[derive(Debug, Clone)]
 pub struct RecoveredSnapshot {
     pub last_included_index: LogIndex,
     pub last_included_term: Term,
+    pub peers: BTreeSet<NodeId>,
     pub bytes: Vec<u8>,
 }
 
@@ -171,6 +182,7 @@ impl<C: Clone> Engine<C> {
                 peers,
                 initial_peers,
                 snapshot_bytes: None,
+                snapshot_peers: None,
             },
         }
     }
@@ -197,21 +209,37 @@ impl<C: Clone> Engine<C> {
     pub fn recover_from(&mut self, recovered: RecoveredHardState<C>) {
         self.state.current_term = recovered.current_term;
         self.state.voted_for = recovered.voted_for;
+
+        // §7: a snapshot's peer set is the cluster config as of
+        // `last_included_index`. Restore it before replaying any
+        // post-snapshot CCs so `apply_config_change` deltas land
+        // on the right base.
+        let restored_peers = recovered.snapshot.as_ref().map(|s| s.peers.clone());
         if let Some(snap) = recovered.snapshot {
-            // Install the floor. Log::install_snapshot clears entries
-            // at or below the floor unless they match the snapshot's
-            // term at last_included_index — which they won't, because
-            // we're starting from an empty in-memory log.
             self.state
                 .log
                 .install_snapshot(snap.last_included_index, snap.last_included_term);
             self.state.snapshot_bytes = Some(snap.bytes);
+            self.state.snapshot_peers = Some(snap.peers);
             self.state.commit_index = snap.last_included_index;
             self.state.last_applied = snap.last_included_index;
         }
+        if let Some(mut peers) = restored_peers {
+            peers.remove(&self.id); // self is implicit
+            self.state.peers = peers;
+        }
+
+        // Replay post-snapshot CCs against the restored config so the
+        // engine's active set reflects everything known at boot
+        // (committed or not, per §4.3).
         for entry in recovered.post_snapshot_log {
+            if let LogPayload::ConfigChange(change) = &entry.payload {
+                let change = *change;
+                self.apply_config_change(change);
+            }
             self.state.log.append(entry);
         }
+
         // Reset role to Follower regardless of what we were before the
         // crash. Volatile state (role, election/heartbeat counters) is
         // rebuilt by the host's tick loop, which will detect a missing
@@ -597,12 +625,28 @@ impl<C: Clone> Engine<C> {
             // unreachable spot — refuse rather than fabricate a term.
             return vec![];
         };
+        // §7 + §4.3: the snapshot's peer set is the committed config as
+        // of `last_included_index` — initial_peers plus every CC with
+        // index ≤ last_included_index. We compute this BEFORE moving
+        // the floor (install_snapshot drops those entries).
+        let mut peers_at_floor = self.state.initial_peers.clone();
+        let first = self.state.log.first_index().get();
+        for i in first..=last_included_index.get() {
+            if let Some(e) = self.state.log.entry_at(LogIndex::new(i))
+                && let LogPayload::ConfigChange(change) = &e.payload
+            {
+                apply_config_to_set(&mut peers_at_floor, *change, self.id);
+            }
+        }
+
         self.state
             .log
             .install_snapshot(last_included_index, last_included_term);
         self.state.snapshot_bytes = Some(bytes.clone());
+        self.state.snapshot_peers = Some(peers_at_floor.clone());
         vec![Action::PersistSnapshot {
             last_included_index,
+            peers: peers_at_floor,
             last_included_term,
             bytes,
         }]
@@ -701,13 +745,55 @@ impl<C: Clone> Engine<C> {
     /// (`AddPeer`'s inverse depends on whether the peer was there before),
     /// so we recompute from scratch.
     fn recompute_active_config(&mut self) {
-        self.state.peers.clone_from(&self.state.initial_peers);
+        // Start from the committed-config baseline. If a snapshot exists,
+        // it carries the config as of `snapshot_last().index`; otherwise
+        // fall back to the bootstrap config.
+        //
+        // Without this, a snapshot that included committed AddPeer /
+        // RemovePeer entries would have those effects silently reverted
+        // — entries below the floor aren't addressable via entry_at, so
+        // the old "walk from index 1" approach missed them.
+        let snapshot_floor = self.state.log.snapshot_last().index;
+        let mut base = if snapshot_floor == LogIndex::ZERO {
+            self.state.initial_peers.clone()
+        } else {
+            // The snapshot's peer set was restored into self.state.peers
+            // when the snapshot landed (via recover_from or
+            // on_install_snapshot_request). Post-snapshot CCs applied
+            // before this recompute are reflected in state.peers too,
+            // but there's no clean way to separate them here — callers
+            // of recompute_active_config do so after a truncation that
+            // invalidates some post-floor CC entries, and must arrange
+            // for state.peers to reflect only the snapshot's baseline
+            // before calling. See the post-truncation caller in
+            // on_append_entries_request.
+            self.state.peers.clone()
+        };
+        let first = self.state.log.first_index().get();
         let last = self.state.log.last_log_id().map_or(0, |l| l.index.get());
-        for i in 1..=last {
+        for i in first..=last {
             if let Some(entry) = self.state.log.entry_at(LogIndex::new(i))
-                && let LogPayload::ConfigChange(change) = entry.payload
+                && let LogPayload::ConfigChange(change) = &entry.payload
             {
-                self.apply_config_change(change);
+                apply_config_to_set(&mut base, *change, self.id);
+            }
+        }
+        self.state.peers = base;
+
+        // Also rebuild leader progress if we're leader — add peers we
+        // newly track, drop ones we no longer do.
+        if let RoleState::Leader(l) = &mut self.state.role {
+            let leader_last = self
+                .state
+                .log
+                .last_log_id()
+                .map_or(LogIndex::ZERO, |l| l.index);
+            let tracked: BTreeSet<NodeId> = l.progress.peers().collect();
+            for id in self.state.peers.difference(&tracked).copied() {
+                l.progress.add_peer(id, leader_last);
+            }
+            for id in tracked.difference(&self.state.peers).copied() {
+                l.progress.remove_peer(id);
             }
         }
     }
@@ -1094,6 +1180,7 @@ impl<C: Clone> Engine<C> {
             .log
             .install_snapshot(request.last_included.index, request.last_included.term);
         self.state.snapshot_bytes = Some(request.data.clone());
+        self.state.snapshot_peers = Some(request.peers.clone());
 
         // Advance commit / applied past the snapshot. The snapshot
         // captures everything up to `last_included.index`, so we treat
@@ -1114,12 +1201,14 @@ impl<C: Clone> Engine<C> {
                 .map_or(LogIndex::ZERO, |l| l.index);
             self.state.commit_index = request.leader_commit.min(last_log);
         }
-        // Recompute active config from scratch — entries below the
-        // floor are gone, so we need to start over from initial_peers.
-        // The snapshot is opaque to us (host's state-machine bytes);
-        // we trust the leader that whatever membership it implies is
-        // captured in the post-snapshot log entries we still have or
-        // will receive.
+        // §7 + §4.3: restore membership from the snapshot's peer set.
+        // Pre-floor entries are gone; the snapshot carries the config
+        // as of last_included_index. Any surviving post-floor entries
+        // (Log::install_snapshot keeps entries past a matching
+        // boundary) get their CCs replayed on top.
+        let mut peers = request.peers.clone();
+        peers.remove(&self.id);
+        self.state.peers = peers;
         self.recompute_active_config();
 
         let mut out = Vec::new();
@@ -1129,6 +1218,7 @@ impl<C: Clone> Engine<C> {
         out.push(Action::PersistSnapshot {
             last_included_index: request.last_included.index,
             last_included_term: request.last_included.term,
+            peers: request.peers.clone(),
             bytes: request.data.clone(),
         });
         out.push(Action::ApplySnapshot {
@@ -1315,6 +1405,7 @@ impl<C: Clone> Engine<C> {
     fn install_snapshot_to(&self, peer: NodeId) -> Action<C> {
         let last_included = self.state.log.snapshot_last();
         let bytes = self.state.snapshot_bytes.clone().unwrap_or_default();
+        let peers = self.state.snapshot_peers.clone().unwrap_or_default();
         Action::Send {
             to: peer,
             message: InstallSnapshotRequest(RequestInstallSnapshot {
@@ -1323,6 +1414,7 @@ impl<C: Clone> Engine<C> {
                 last_included,
                 data: bytes,
                 leader_commit: self.state.commit_index,
+                peers,
             }),
         }
     }
@@ -1430,5 +1522,22 @@ impl<C: Clone> Engine<C> {
     fn reset_election_timer(&mut self) {
         self.state.election_elapsed = 0;
         self.state.election_timeout_ticks = self.env.next_election_timeout();
+    }
+}
+
+/// Apply `change` to a peer set under the perspective of `self_id`
+/// (self is always implicit in the set, so self-adds and self-removes
+/// are no-ops for the set itself). Free function so snapshot-building
+/// code can run it against a temporary `BTreeSet<NodeId>` without
+/// owning an `Engine`.
+fn apply_config_to_set(peers: &mut BTreeSet<NodeId>, change: ConfigChange, self_id: NodeId) {
+    match change {
+        ConfigChange::AddPeer(id) if id != self_id => {
+            peers.insert(id);
+        }
+        ConfigChange::RemovePeer(id) if id != self_id => {
+            peers.remove(&id);
+        }
+        _ => {}
     }
 }

@@ -228,6 +228,7 @@ async fn restart_preserves_voted_for() {
         snapshot: recovered.snapshot.map(|s| RecoveredSnapshot {
             last_included_index: s.last_included_index,
             last_included_term: s.last_included_term,
+            peers: s.peers,
             bytes: s.bytes,
         }),
         post_snapshot_log: recovered.log,

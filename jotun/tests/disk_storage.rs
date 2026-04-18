@@ -174,6 +174,7 @@ async fn snapshot_replaces_log_prefix() {
         StoredSnapshot {
             last_included_index: LogIndex::new(2),
             last_included_term: Term::new(1),
+            peers: std::collections::BTreeSet::new(),
             bytes: b"snapshot-bytes".to_vec(),
         },
     )
@@ -210,6 +211,7 @@ async fn appends_after_snapshot_use_correct_indices() {
         StoredSnapshot {
             last_included_index: LogIndex::new(2),
             last_included_term: Term::new(1),
+            peers: std::collections::BTreeSet::new(),
             bytes: b"snap".to_vec(),
         },
     )

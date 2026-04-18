@@ -58,6 +58,7 @@ fn snapshot_taken_truncates_log_up_to_index_and_emits_persist_snapshot() {
             last_included_index,
             last_included_term,
             bytes,
+            ..
         } => Some((*last_included_index, *last_included_term, bytes.clone())),
         _ => None,
     });

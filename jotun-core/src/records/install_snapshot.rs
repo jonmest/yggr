@@ -5,6 +5,8 @@
 //! longer construct a valid `prev_log_id` from entries that have been
 //! compacted into the snapshot.
 
+use std::collections::BTreeSet;
+
 use crate::types::{index::LogIndex, log::LogId, node::NodeId, term::Term};
 
 /// Leader → follower: "here is a snapshot of the application state
@@ -26,6 +28,12 @@ pub struct RequestInstallSnapshot {
     /// advances its own `commit_index` to at least
     /// `min(leader_commit, last_included.index)` on success.
     pub leader_commit: LogIndex,
+    /// Cluster membership as of `last_included.index`. Ships with
+    /// the snapshot so committed `AddPeer` / `RemovePeer` entries
+    /// that got snapshotted survive install on the receiver — without
+    /// it, the follower would revert to its bootstrap config and
+    /// compute the wrong majority.
+    pub peers: BTreeSet<NodeId>,
 }
 
 /// Follower → leader: "I observed your snapshot offer at `term`."

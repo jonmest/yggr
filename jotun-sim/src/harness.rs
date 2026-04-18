@@ -38,6 +38,7 @@ pub(crate) struct PersistedState<C> {
 pub(crate) struct PersistedSnapshot {
     pub(crate) last_included_index: LogIndex,
     pub(crate) last_included_term: Term,
+    pub(crate) peers: BTreeSet<NodeId>,
     pub(crate) bytes: Vec<u8>,
 }
 
@@ -63,6 +64,7 @@ pub(crate) enum PendingWrite<C> {
     Snapshot {
         last_included_index: LogIndex,
         last_included_term: Term,
+        peers: BTreeSet<NodeId>,
         bytes: Vec<u8>,
     },
 }
@@ -163,11 +165,13 @@ impl<C: Clone> NodeHarness<C> {
                 Action::PersistSnapshot {
                     last_included_index,
                     last_included_term,
+                    peers,
                     bytes,
                 } => {
                     self.pending.push(PendingWrite::Snapshot {
                         last_included_index: *last_included_index,
                         last_included_term: *last_included_term,
+                        peers: peers.clone(),
                         bytes: bytes.clone(),
                     });
                 }
@@ -251,11 +255,13 @@ fn apply_write<C>(persisted: &mut PersistedState<C>, write: PendingWrite<C>) {
         PendingWrite::Snapshot {
             last_included_index,
             last_included_term,
+            peers,
             bytes,
         } => {
             persisted.snapshot = Some(PersistedSnapshot {
                 last_included_index,
                 last_included_term,
+                peers,
                 bytes,
             });
             // Drop log entries up to and including the snapshot floor.
@@ -317,6 +323,7 @@ fn hydrate_engine<C: Clone>(engine: &mut Engine<C>, persisted: &PersistedState<C
                 last_included: LogId::new(snap.last_included_index, snap.last_included_term),
                 data: snap.bytes.clone(),
                 leader_commit: snap.last_included_index,
+                peers: snap.peers.clone(),
             }),
         }));
         snap.last_included_index

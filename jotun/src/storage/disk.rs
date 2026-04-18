@@ -507,10 +507,19 @@ where
     }
 
     async fn persist_snapshot(&mut self, snap: StoredSnapshot) -> Result<(), Self::Error> {
-        // Snapshot meta: [u64 LE index][u64 LE term]
-        let mut meta = Vec::with_capacity(16);
+        // Snapshot meta:
+        //   [u64 LE index][u64 LE term][u32 LE peer_count][u64 LE peer_id × peer_count]
+        // Peers are the committed cluster membership at
+        // `last_included_index`; recovery reconstructs them from here.
+        let peer_count = u32::try_from(snap.peers.len())
+            .map_err(|_| DiskStorageError::Malformed("snapshot peer count exceeds 4B"))?;
+        let mut meta = Vec::with_capacity(16 + 4 + (snap.peers.len() * 8));
         meta.extend_from_slice(&snap.last_included_index.get().to_le_bytes());
         meta.extend_from_slice(&snap.last_included_term.get().to_le_bytes());
+        meta.extend_from_slice(&peer_count.to_le_bytes());
+        for id in &snap.peers {
+            meta.extend_from_slice(&id.get().to_le_bytes());
+        }
 
         // Order: bytes first (large), meta second (small). Meta is the
         // commit-pointer. A crash between the two leaves orphan bytes
@@ -689,17 +698,33 @@ async fn read_snapshot(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    if meta.len() != 16 {
-        return Err(DiskStorageError::Malformed("snapshot_meta.bin wrong size"));
+    if meta.len() < 20 {
+        return Err(DiskStorageError::Malformed("snapshot_meta.bin too short"));
     }
     let idx_bytes: [u8; 8] = meta[0..8].try_into().expect("8 bytes");
     let term_bytes: [u8; 8] = meta[8..16].try_into().expect("8 bytes");
+    let count_bytes: [u8; 4] = meta[16..20].try_into().expect("4 bytes");
     let last_included_index = LogIndex::new(u64::from_le_bytes(idx_bytes));
     let last_included_term = Term::new(u64::from_le_bytes(term_bytes));
+    let peer_count = u32::from_le_bytes(count_bytes) as usize;
+    let expected_len = 20 + peer_count * 8;
+    if meta.len() != expected_len {
+        return Err(DiskStorageError::Malformed("snapshot_meta.bin size mismatch"));
+    }
+    let mut peers = std::collections::BTreeSet::new();
+    for i in 0..peer_count {
+        let off = 20 + i * 8;
+        let raw: [u8; 8] = meta[off..off + 8].try_into().expect("8 bytes");
+        let peer = NodeId::new(u64::from_le_bytes(raw)).ok_or(DiskStorageError::Malformed(
+            "snapshot_meta.bin peer id is zero",
+        ))?;
+        peers.insert(peer);
+    }
     let bytes = tokio::fs::read(bytes_path).await?;
     Ok(Some(StoredSnapshot {
         last_included_index,
         last_included_term,
+        peers,
         bytes,
     }))
 }

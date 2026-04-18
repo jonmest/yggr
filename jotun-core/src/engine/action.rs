@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::{
     records::{log_entry::LogEntry, message::Message},
     types::{index::LogIndex, node::NodeId, term::Term},
@@ -49,9 +51,16 @@ pub enum Action<C> {
     /// floor; the host MUST flush these bytes before any subsequent
     /// `Send` referring to indices at or below the floor (in
     /// practice, before any `InstallSnapshot` reply).
+    ///
+    /// `peers` is the cluster membership as of `last_included_index` —
+    /// the host stores it alongside the bytes so membership survives
+    /// restart and snapshot-based catch-up. Without this, committed
+    /// `AddPeer` / `RemovePeer` entries that get snapshotted would be
+    /// lost on recovery and the node would compute the wrong majority.
     PersistSnapshot {
         last_included_index: LogIndex,
         last_included_term: Term,
+        peers: BTreeSet<NodeId>,
         bytes: Vec<u8>,
     },
     /// Restore the application's state machine from `bytes`. Emitted
