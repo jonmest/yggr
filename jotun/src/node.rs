@@ -72,6 +72,7 @@ impl<S: StateMachine> Clone for Node<S> {
 struct BackgroundTasks {
     ticker: JoinHandle<()>,
     driver: JoinHandle<()>,
+    apply: JoinHandle<()>,
 }
 
 /// How a node should come up at [`Node::start`] time.
@@ -147,6 +148,11 @@ pub struct Config {
     /// the driver rejects new calls with [`ProposeError::Busy`].
     /// Defaults to 1024.
     pub max_pending_proposals: usize,
+    /// Capacity of the driver → apply-task channel. When full, the
+    /// driver awaits space, providing natural backpressure on
+    /// replication while the state machine catches up. Defaults to
+    /// 4096.
+    pub max_pending_applies: usize,
     /// Applied-entry threshold for automatic snapshot hints. `0`
     /// disables host-initiated snapshotting in the runtime; incoming
     /// leader snapshots still install normally.
@@ -241,6 +247,7 @@ impl Config {
             tick_interval: Duration::from_millis(50),
             bootstrap,
             max_pending_proposals: 1024,
+            max_pending_applies: 4096,
             snapshot_hint_threshold_entries: 1024,
             snapshot_chunk_size_bytes: 64 * 1024,
         }
@@ -518,6 +525,13 @@ impl<S: StateMachine> Node<S> {
 
         let max_pending_proposals = config.max_pending_proposals;
 
+        // Apply task: owns the state machine, is fed committed
+        // commands / confirmed reads / snapshot restores by the
+        // driver. Bounded channel gives the driver backpressure if
+        // the state machine falls behind.
+        let (apply_tx, apply_rx) = mpsc::channel::<ApplyRequest<S>>(config.max_pending_applies);
+        let apply: JoinHandle<()> = tokio::spawn(apply_loop(state_machine, apply_rx));
+
         let (inputs_tx, inputs_rx) = mpsc::channel::<DriverInput<S>>(1024);
 
         // Spawn the tick driver. Lives as long as the inputs channel
@@ -539,7 +553,7 @@ impl<S: StateMachine> Node<S> {
         let driver_state = Driver {
             node_id: config.node_id,
             engine,
-            state_machine,
+            apply_tx,
             storage,
             transport,
             inputs: inputs_rx,
@@ -554,7 +568,7 @@ impl<S: StateMachine> Node<S> {
 
         Ok(Self {
             inputs: inputs_tx,
-            background: Arc::new(Mutex::new(Some(BackgroundTasks { ticker, driver }))),
+            background: Arc::new(Mutex::new(Some(BackgroundTasks { ticker, driver, apply }))),
         })
     }
 
@@ -730,7 +744,7 @@ impl<S: StateMachine> Node<S> {
         let Some(background) = background else {
             return Ok(());
         };
-        let BackgroundTasks { ticker, driver } = background;
+        let BackgroundTasks { ticker, driver, apply } = background;
 
         ticker.abort();
         match ticker.await {
@@ -739,6 +753,14 @@ impl<S: StateMachine> Node<S> {
             Err(_) => return Err(ProposeError::DriverDead),
         }
         match driver.await {
+            Ok(()) => {}
+            Err(_) => return Err(ProposeError::DriverDead),
+        }
+        // Driver's apply_tx was dropped when driver exited. The apply
+        // task's recv() now returns None; it drains pending requests
+        // in arrival order and exits. Await it to ensure every Apply
+        // we dispatched has landed on the state machine.
+        match apply.await {
             Ok(()) => Ok(()),
             Err(_) => Err(ProposeError::DriverDead),
         }
@@ -752,7 +774,10 @@ impl<S: StateMachine> Node<S> {
 struct Driver<S: StateMachine, St, Tr> {
     node_id: NodeId,
     engine: Engine<Vec<u8>>,
-    state_machine: S,
+    /// Sender to the apply task that owns the state machine. Every
+    /// `Action::Apply` / `Action::ApplySnapshot` / `Action::ReadReady`
+    /// becomes an `ApplyRequest` over this channel.
+    apply_tx: mpsc::Sender<ApplyRequest<S>>,
     storage: St,
     transport: Tr,
     inputs: mpsc::Receiver<DriverInput<S>>,
@@ -779,6 +804,60 @@ struct Driver<S: StateMachine, St, Tr> {
 struct PendingRead<S: StateMachine> {
     reader: Box<dyn FnOnce(&S) + Send>,
     on_failure: Box<dyn FnOnce(ReadError) + Send>,
+}
+
+/// Unit of work the driver ships to the apply task. Every request
+/// mutates or observes the state machine in the order the driver
+/// emitted it.
+enum ApplyRequest<S: StateMachine> {
+    /// A committed command. The driver already decoded it; apply
+    /// runs and (optionally) replies to the originating `propose`.
+    Command {
+        command: S::Command,
+        reply: Option<oneshot::Sender<Result<S::Response, ProposeError>>>,
+    },
+    /// A linearizable read confirmed by the engine. Runs against the
+    /// post-apply state machine.
+    Read {
+        reader: Box<dyn FnOnce(&S) + Send>,
+    },
+    /// Restore the state machine from snapshot bytes just installed.
+    Restore { bytes: Vec<u8> },
+    /// Produce a snapshot of current state. Reply carries the bytes.
+    /// Ordered behind any preceding `Command` so the snapshot observes
+    /// every applied entry up to this request.
+    TakeSnapshot {
+        reply: oneshot::Sender<Vec<u8>>,
+    },
+}
+
+/// The apply task: owns the state machine, processes `ApplyRequest`s
+/// in FIFO order. Runs until the channel closes (every sender has
+/// been dropped — i.e. the driver exited).
+async fn apply_loop<S: StateMachine>(
+    mut state_machine: S,
+    mut rx: mpsc::Receiver<ApplyRequest<S>>,
+) {
+    while let Some(req) = rx.recv().await {
+        match req {
+            ApplyRequest::Command { command, reply } => {
+                let response = state_machine.apply(command);
+                if let Some(reply) = reply {
+                    let _ = reply.send(Ok(response));
+                }
+            }
+            ApplyRequest::Read { reader } => {
+                reader(&state_machine);
+            }
+            ApplyRequest::Restore { bytes } => {
+                state_machine.restore(bytes);
+            }
+            ApplyRequest::TakeSnapshot { reply } => {
+                let bytes = state_machine.snapshot();
+                let _ = reply.send(bytes);
+            }
+        }
+    }
 }
 
 enum DriverInput<S: StateMachine> {
@@ -821,7 +900,7 @@ where
 {
     // Re-hydrate the engine from persisted state by feeding synthetic
     // RPCs. Same approach the sim harness uses for crash-recover.
-    hydrate_engine(&mut d, recovered);
+    hydrate_engine(&mut d, recovered).await;
 
     loop {
         let result: Result<(), Fatal> = tokio::select! {
@@ -868,7 +947,7 @@ where
     }
 }
 
-fn hydrate_engine<S, St, Tr>(d: &mut Driver<S, St, Tr>, recovered: RecoveredState<Vec<u8>>)
+async fn hydrate_engine<S, St, Tr>(d: &mut Driver<S, St, Tr>, recovered: RecoveredState<Vec<u8>>)
 where
     S: StateMachine,
     St: Storage<Vec<u8>>,
@@ -908,7 +987,12 @@ where
     // snapshot floor is uncommitted until a current-term leader
     // tells us otherwise, so there's nothing else to apply here.
     if let Some(bytes) = snapshot_bytes_for_sm {
-        d.state_machine.restore(bytes);
+        // Send.await won't fail: the apply task was spawned right
+        // before driver_loop and hasn't had a reason to exit yet.
+        let _ = d
+            .apply_tx
+            .send(ApplyRequest::Restore { bytes })
+            .await;
     }
     // Mirror the engine's restored last_applied onto the driver's
     // NodeStatus cache.
@@ -1171,15 +1255,37 @@ where
                 }
             }
             Action::Apply(entries) => {
-                apply_entries(d, entries)?;
+                apply_entries(d, entries).await?;
             }
             Action::ApplySnapshot { bytes } => {
-                d.state_machine.restore(bytes);
+                if d.apply_tx
+                    .send(ApplyRequest::Restore { bytes })
+                    .await
+                    .is_err()
+                {
+                    return Err(Fatal {
+                        reason: "apply task died",
+                    });
+                }
             }
             Action::SnapshotHint {
                 last_included_index,
             } => {
-                let bytes = d.state_machine.snapshot();
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if d.apply_tx
+                    .send(ApplyRequest::TakeSnapshot { reply: reply_tx })
+                    .await
+                    .is_err()
+                {
+                    return Err(Fatal {
+                        reason: "apply task died",
+                    });
+                }
+                let Ok(bytes) = reply_rx.await else {
+                    return Err(Fatal {
+                        reason: "apply task died",
+                    });
+                };
                 if bytes.is_empty() {
                     continue;
                 }
@@ -1196,8 +1302,17 @@ where
                 // shouldn't emit Redirect from any other path.
             }
             Action::ReadReady { id } => {
-                if let Some(pending) = d.pending_reads.remove(&id) {
-                    (pending.reader)(&d.state_machine);
+                if let Some(pending) = d.pending_reads.remove(&id)
+                    && d.apply_tx
+                        .send(ApplyRequest::Read {
+                            reader: pending.reader,
+                        })
+                        .await
+                        .is_err()
+                {
+                    return Err(Fatal {
+                        reason: "apply task died",
+                    });
                 }
             }
             Action::ReadFailed { id, reason } => {
@@ -1248,7 +1363,7 @@ where
     }
 }
 
-fn apply_entries<S, St, Tr>(
+async fn apply_entries<S, St, Tr>(
     d: &mut Driver<S, St, Tr>,
     entries: Vec<LogEntry<Vec<u8>>>,
 ) -> Result<(), Fatal>
@@ -1277,9 +1392,15 @@ where
                     });
                 }
             };
-            let response = d.state_machine.apply(cmd);
-            if let Some(reply) = d.pending_proposals.remove(&entry.id.index) {
-                let _ = reply.send(Ok(response));
+            let reply = d.pending_proposals.remove(&entry.id.index);
+            if d.apply_tx
+                .send(ApplyRequest::Command { command: cmd, reply })
+                .await
+                .is_err()
+            {
+                return Err(Fatal {
+                    reason: "apply task died",
+                });
             }
         }
     }

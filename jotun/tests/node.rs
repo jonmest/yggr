@@ -440,3 +440,93 @@ async fn read_linearizable_on_follower_returns_not_leader() {
 
     node.shutdown().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Async apply: a state machine with a slow apply() must not block the
+// driver's tick / status processing. With the state machine running on
+// its own task, proposals queue up in the apply channel and the driver
+// stays responsive to Tick and Status inputs.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+struct SlowCounter {
+    value: u64,
+}
+
+impl StateMachine for SlowCounter {
+    type Command = CountCmd;
+    type Response = u64;
+
+    fn encode_command(c: &CountCmd) -> Vec<u8> {
+        Counter::encode_command(c)
+    }
+    fn decode_command(bytes: &[u8]) -> Result<CountCmd, DecodeError> {
+        Counter::decode_command(bytes)
+    }
+    fn apply(&mut self, cmd: CountCmd) -> u64 {
+        // Slow enough to starve the driver if apply were still
+        // running inline. Multiple commits' worth of 50ms each
+        // would blow past the election timeout set below and the
+        // node would churn through terms.
+        std::thread::sleep(Duration::from_millis(50));
+        match cmd {
+            CountCmd::Inc(n) => {
+                self.value += n;
+                self.value
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_apply_does_not_stall_driver_status() {
+    let tmp = TmpDir::new("slow-apply");
+    let storage = DiskStorage::open(&tmp.0).await.unwrap();
+    let port = free_port();
+    let addr: SocketAddr = (Ipv4Addr::LOCALHOST, port).into();
+    let transport: TcpTransport<Vec<u8>> = TcpTransport::start(nid(1), addr, BTreeMap::new())
+        .await
+        .unwrap();
+
+    let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    config.election_timeout_min_ticks = 8;
+    config.election_timeout_max_ticks = 12;
+    config.heartbeat_interval_ticks = 2;
+    config.tick_interval = Duration::from_millis(10);
+
+    let node = Node::start(config, SlowCounter::default(), storage, transport)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Fire several proposals back-to-back. Propose returns as soon
+    // as each commits and lands on the state machine via the apply
+    // task; the apply task processes them serially with a 50ms sleep.
+    let n = 5u64;
+    let start = std::time::Instant::now();
+    for i in 1..=n {
+        let r = tokio::time::timeout(Duration::from_secs(5), node.propose(CountCmd::Inc(1)))
+            .await
+            .expect("propose timed out")
+            .expect("propose returned error");
+        assert_eq!(r, i);
+    }
+    let elapsed = start.elapsed();
+    // Sanity bound: nothing should compound the 50ms-per-commit
+    // cost beyond tick overhead.
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "propose loop took {elapsed:?} — driver probably stalled",
+    );
+
+    // Node is still leader — no election churn. (A stalled driver
+    // would have dropped heartbeats and stepped down.)
+    let status = tokio::time::timeout(Duration::from_secs(1), node.status())
+        .await
+        .expect("status timed out")
+        .expect("status returned error");
+    assert_eq!(status.node_id, nid(1));
+
+    node.shutdown().await.unwrap();
+}
