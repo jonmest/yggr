@@ -4,6 +4,7 @@ mod broadcast;
 mod client_proposal;
 mod config_change;
 mod fixtures;
+mod invariants;
 mod leadership_transfer;
 mod membership;
 mod persistence;
