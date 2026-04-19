@@ -2,11 +2,6 @@
 
 Jotun is a Rust Raft library split into a pure consensus engine, a deterministic simulation harness, a tokio runtime, and a small replicated KV example.
 
-The workspace is aimed at two kinds of users:
-
-- people who want a reusable Raft state machine with no I/O baked in
-- people who want to stand up a practical replicated service on tokio without writing the engine/runtime glue themselves
-
 ## Crates
 
 - `jotun-core`
@@ -26,13 +21,13 @@ The workspace is aimed at two kinds of users:
 - segmented on-disk log storage
 - protobuf wire format and a TCP transport
 - deterministic simulation with safety checks
+- linearizable reads via `Node::read_linearizable` (Raft §8 `ReadIndex`)
+- leadership transfer via `Node::transfer_leadership_to` (`TimeoutNow` RPC)
+- async state-machine apply — slow `apply` no longer stalls heartbeats
+- opt-in leader proposal batching (`Config::max_batch_delay_ticks`)
 - runtime APIs for bootstrap mode selection, proposal backpressure, status inspection, and graceful shutdown
 
-## Current Caveats
-
-- no linearizable read helper / `ReadIndex` API yet
-- no leadership-transfer API yet
-- proposal batching and async state-machine apply are queued, not implemented
+Compression is a host-side concern: compress inside `StateMachine::snapshot`, decompress inside `StateMachine::restore`. jotun treats the bytes as opaque through the engine, disk, and wire.
 
 ## Quick Start
 
