@@ -12,6 +12,8 @@ env:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: pages-${{ github.ref }}
@@ -32,6 +34,16 @@ jobs:
           tool: mdbook
       - name: Install protoc + mold linker
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
+
+      # Switch Pages source to "GitHub Actions" on first run. If the
+      # repo still has "Deploy from a branch" set, this flips it —
+      # removing the need to touch repo settings manually. Only runs
+      # on push to main; PR builds just produce the artifact.
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+        with:
+          enablement: true
 
       - name: Build rustdoc (workspace, no-deps)
         run: cargo doc --workspace --no-deps --all-features
@@ -69,9 +81,6 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
