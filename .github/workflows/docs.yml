@@ -30,8 +30,8 @@ jobs:
       - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2.75.17
         with:
           tool: mdbook
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
 
       - name: Build rustdoc (workspace, no-deps)
         run: cargo doc --workspace --no-deps --all-features

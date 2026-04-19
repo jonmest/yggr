@@ -145,7 +145,7 @@ async fn abort_and_join(handle: JoinHandle<()>) {
         Ok(()) => {}
         Err(e) if e.is_cancelled() => {}
         Err(e) => {
-            debug!(target = "jotun::transport", error = %e, "background task exited with error during shutdown")
+            debug!(target = "jotun::transport", error = %e, "background task exited with error during shutdown");
         }
     }
 }

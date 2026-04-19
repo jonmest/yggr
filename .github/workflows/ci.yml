@@ -37,8 +37,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@23869a5bd66c73db3c0ac40331f3206eb23791dc # v2.9.1
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - run: cargo clippy --all-targets -- -D warnings
 
   test:
@@ -53,8 +53,8 @@ jobs:
       - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2.75.17
         with:
           tool: cargo-nextest
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - run: cargo nextest run --workspace --all-targets
       - run: cargo test --workspace --doc
 
@@ -72,8 +72,8 @@ jobs:
       - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2.75.17
         with:
           tool: cargo-llvm-cov,cargo-nextest
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - run: cargo llvm-cov --workspace --all-targets --summary-only
 
   deny:
@@ -111,17 +111,21 @@ jobs:
       - uses: taiki-e/install-action@58e862542551f667fa44c8a2a4a1d64ad477c96a # v2.75.17
         with:
           tool: cargo-fuzz
-      - name: Install protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       # 30 seconds per target is enough to catch panics and shallow
       # crashes on every PR. Nightly ensures the sanitizer runtime
       # cargo-fuzz needs is available.
+      #
+      # `--target x86_64-unknown-linux-gnu` is explicit: cargo-fuzz
+      # defaults to musl on some hosts, which conflicts with the
+      # sanitizer runtime (crt-static vs -Zsanitizer=address).
       - name: fuzz proto_message
-        run: cd fuzz && cargo +nightly fuzz run fuzz_proto_message -- -max_total_time=30
+        run: cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_proto_message -- -max_total_time=30
       - name: fuzz engine_events
-        run: cd fuzz && cargo +nightly fuzz run fuzz_engine_events -- -max_total_time=30
+        run: cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_engine_events -- -max_total_time=30
       - name: fuzz disk_storage_recover
-        run: cd fuzz && cargo +nightly fuzz run fuzz_disk_storage_recover -- -max_total_time=30
+        run: cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_disk_storage_recover -- -max_total_time=30
       # Keep any crashes the fuzzer finds as an artifact for triage.
       - name: Upload fuzz artifacts
         if: failure()

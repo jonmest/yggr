@@ -61,14 +61,16 @@ fuzz-list:
     cd fuzz && cargo +nightly fuzz list
 
 # Smoke-run every fuzz target for 30 seconds each. CI uses this.
+# `--target x86_64-unknown-linux-gnu` avoids cargo-fuzz's default
+# musl selection, which conflicts with -Zsanitizer=address.
 fuzz-smoke:
-    cd fuzz && cargo +nightly fuzz run fuzz_proto_message -- -max_total_time=30
-    cd fuzz && cargo +nightly fuzz run fuzz_engine_events -- -max_total_time=30
-    cd fuzz && cargo +nightly fuzz run fuzz_disk_storage_recover -- -max_total_time=30
+    cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_proto_message -- -max_total_time=30
+    cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_engine_events -- -max_total_time=30
+    cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu fuzz_disk_storage_recover -- -max_total_time=30
 
 # Run one fuzz target for N seconds: `just fuzz-run fuzz_proto_message 300`.
 fuzz-run target seconds="60":
-    cd fuzz && cargo +nightly fuzz run {{target}} -- -max_total_time={{seconds}}
+    cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu {{target}} -- -max_total_time={{seconds}}
 
 # Just compile every fuzz target (no execution). Works on stable.
 fuzz-check:
