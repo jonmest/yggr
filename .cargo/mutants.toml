@@ -1,0 +1,133 @@
+# cargo-mutants config. Run with `cargo mutants` or `just mutants`.
+#
+# Mutation testing flips operators and constants in source and verifies
+# the test suite catches the change. An untested mutant ("MISSED") means
+# tests don't distinguish that behavior. Good for finding coverage gaps.
+#
+# This config filters out LOW-VALUE mutants so the report focuses on
+# correctness-shaping code. Categories excluded:
+#
+#  - Generated code (protobuf).
+#  - Observability (telemetry, Display/Debug/source — diagnostic only,
+#    we don't assert on string contents in tests).
+#  - Accessor / builder boilerplate (getters, Default impls, Clone).
+#  - Example binaries (not part of the library contract).
+#  - Debug-only invariant checkers.
+#  - TODO handlers that are still todo!() or explicit panics.
+
+test_tool = "nextest"
+
+# Use the `mutants` nextest profile (see .config/nextest.toml). That
+# profile filters out full-stack integration tests (runtime chaos,
+# multi-node TCP, loopback TCP transport) and the slowest sim
+# proptests — each would otherwise run 900+ times during a mutants
+# sweep. The behavior they cover is exercised at unit/proptest
+# layers that run in sub-second time.
+additional_cargo_test_args = ["--profile", "mutants"]
+
+# File-level exclusions. Globs must match the full path when they
+# contain a slash.
+exclude_globs = [
+    "**/target/**",
+    "jotun-core/src/transport/protobuf/**",
+    # Observability: tracing-only, no test assertions on field output.
+    "jotun-core/src/engine/telemetry.rs",
+    # Example binary: not a library-contract surface.
+    "jotun-examples/**",
+    # Benchmarks / scratch dirs.
+    "**/benches/**",
+    # Proptest persisted regressions.
+    "**/proptest-regressions/**",
+]
+
+# Function-name regex exclusions. Matched (as regex) against the
+# human-readable mutant name shown by `cargo mutants --list`.
+# Keep these broad enough to catch both the struct-bound method form
+# (`<impl X for Y>::method`) and the free-function form.
+exclude_re = [
+    # ---- Observability (diagnostic output, not behavior) ----
+    # Display / Debug impls — no test asserts exact string content.
+    "fmt::Display",
+    "fmt::Debug",
+    # Error::source delegation — cosmetic.
+    "impl std::error::Error",
+
+    # ---- Trivial boilerplate ----
+    # Derived or near-derived impls; mutations to Default::default()
+    # are not worth asserting. Written as "impl Trait for" so the
+    # regex matches the human-readable mutant name.
+    "impl Clone for",
+    "impl Default for",
+    "impl PartialEq for",
+    "impl Eq for",
+    "impl Hash for",
+
+    # ---- Accessors we rely on compiler to prove correct ----
+    # Raft state accessors that just return a field.
+    "^Engine<C>::id$",
+    "^Engine<C>::peers$",
+    "^Engine<C>::current_term$",
+    "^Engine<C>::voted_for$",
+    "^Engine<C>::commit_index$",
+    "^Engine<C>::role$",
+    "^Engine<C>::log$",
+    "^Engine<C>::heartbeat_elapsed$",
+    "^PeerProgress::peer_count$",
+    "^PeerProgress::peers$",
+    "^PeerProgress::next_for$",
+    "^PeerProgress::match_for$",
+    "^FollowerState::leader_id$",
+    "^CandidateState::votes_granted$",
+    "^LeaderState::progress$",
+    "^Log<C>::is_empty$",
+    "^Log<C>::len$",
+    "^Log<C>::first_index$",
+    "^Log<C>::snapshot_last$",
+    "^Log<C>::last_log_id$",
+    "^Log<C>::entry_at$",
+    "^Log<C>::term_at$",
+    "^Log<C>::entries_from$",
+    "^NodeId::new$",
+    "^NodeId::get$",
+    "^Term::new$",
+    "^Term::get$",
+    "^Term::next$",
+    "^LogIndex::new$",
+    "^LogIndex::get$",
+    "^LogIndex::next$",
+    "^LogId::new$",
+
+    # ---- Debug-only invariant machinery ----
+    # These assert internal state; they never run in release.
+    "check_invariants$",
+
+    # ---- Handlers stubbed as todo!() or returning unit ----
+    "^on_tick$",
+    "^on_client_proposal$",
+    "^on_vote_response$",
+    "^become_leader$",
+
+    # ---- DecodeError/ConvertError constructors ----
+    "^DecodeError::new$",
+
+    # ---- DiskStorage path-helper getters ----
+    # Return a joined PathBuf; a mutation replacing with Default::default()
+    # would produce an empty path and every subsequent IO call would
+    # trivially fail. Value is in the operations, not the accessor.
+    "^DiskStorage::path$",
+    "^DiskStorage::log_dir$",
+
+    # ---- Error::source returning Some(Box::leak(...)) mutant ----
+    # The Box::leak Default variant is nonsensical noise; Display is
+    # already excluded and source covered via the main pattern above.
+    "Box::leak",
+
+    # ---- TcpTransport internal helpers for spawned tasks ----
+    # These helpers live on hot paths that are tested end-to-end but
+    # too racy to pin precisely via mutation — a wrong-but-harmless
+    # mutation would just mean the task respawns a bit earlier/later.
+    "TcpTransport<C>::shutdown_owned_tasks",
+    "^abort_and_join$",
+    # Debug-only addr helper on PeerLink.
+    "^PeerLink::addr$",
+]

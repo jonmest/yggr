@@ -1,0 +1,22 @@
+# nextest config. The default profile runs everything; the `mutants`
+# profile is used by cargo-mutants to skip long-running integration
+# tests that would multiply by the number of mutants (hundreds of
+# runs).
+
+[profile.default]
+# Run everything. No filter.
+
+[profile.mutants]
+# Used by cargo-mutants (see .cargo/mutants.toml). The filter excludes
+# full-stack integration harnesses (runtime chaos, multi-node TCP,
+# loopback TCP transport) and the slowest sim proptests — their
+# behavior is covered at cheaper unit/proptest layers for mutation
+# purposes, and running them per-mutant is prohibitively slow (the
+# runtime_chaos binary alone takes ~25s per invocation).
+default-filter = '''
+not binary(runtime_chaos)
+and not binary(multi_node)
+and not binary(tcp_transport)
+and not test(/chaos_schedule_/)
+and not test(/three_node_happy_schedules_/)
+'''

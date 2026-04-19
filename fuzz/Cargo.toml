@@ -1,0 +1,44 @@
+[package]
+name = "jotun-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros"] }
+jotun-core = { path = "../jotun-core" }
+jotun = { path = "../jotun" }
+prost = "0.13"
+
+# Prevent this from interfering with workspace builds.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "fuzz_proto_message"
+path = "fuzz_targets/fuzz_proto_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_engine_events"
+path = "fuzz_targets/fuzz_engine_events.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_disk_storage_recover"
+path = "fuzz_targets/fuzz_disk_storage_recover.rs"
+test = false
+doc = false
+bench = false
