@@ -441,5 +441,124 @@ mod tests {
             let majority = pp.majority_index(idx(leader_last));
             prop_assert!(majority <= idx(leader_last));
         }
+
+        /// `majority_index` is invariant under permutation of peer
+        /// insertion order — the set of (peer, match) pairs, not the
+        /// order in which they arrived, determines the result.
+        #[test]
+        fn majority_index_stable_under_peer_order_permutation(
+            leader_last in 1u64..30,
+            matches in proptest::collection::vec(0u64..=30u64, 1..7),
+            shuffle_seed in any::<u64>(),
+        ) {
+            // Build a canonical list of (peer_id, match_index) pairs.
+            let pairs: Vec<(NodeId, u64)> = matches
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (node((i as u64) + 2), (*m).min(leader_last)))
+                .collect();
+
+            // Version A: insertion order is canonical.
+            let peers_a: Vec<NodeId> = pairs.iter().map(|(p, _)| *p).collect();
+            let mut pp_a = PeerProgress::new(peers_a.iter().copied(), idx(leader_last));
+            for (p, m) in &pairs {
+                pp_a.record_success(*p, idx(*m));
+            }
+
+            // Version B: apply the same pairs in a shuffled order.
+            let mut shuffled = pairs.clone();
+            // Deterministic shuffle keyed on `shuffle_seed`.
+            let mut s = shuffle_seed.max(1);
+            for i in (1..shuffled.len()).rev() {
+                s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+                let j = usize::try_from(s % (i as u64 + 1)).unwrap_or(0);
+                shuffled.swap(i, j);
+            }
+            let peers_b: Vec<NodeId> = shuffled.iter().map(|(p, _)| *p).collect();
+            let mut pp_b = PeerProgress::new(peers_b.iter().copied(), idx(leader_last));
+            for (p, m) in &shuffled {
+                pp_b.record_success(*p, idx(*m));
+            }
+
+            prop_assert_eq!(
+                pp_a.majority_index(idx(leader_last)),
+                pp_b.majority_index(idx(leader_last)),
+                "majority_index depends on insertion order",
+            );
+        }
+
+        /// `majority_index` equals the classical definition: the
+        /// largest N such that at least (cluster_size / 2 + 1) members
+        /// have matchIndex >= N (leader included, leader's matchIndex
+        /// = leader_last_log).
+        #[test]
+        fn majority_index_matches_classical_definition(
+            leader_last in 1u64..20,
+            matches in proptest::collection::vec(0u64..=20u64, 1..7),
+        ) {
+            let peers: Vec<NodeId> = (2..(2 + matches.len() as u64)).map(node).collect();
+            let mut pp = PeerProgress::new(peers.iter().copied(), idx(leader_last));
+            for (p, m) in peers.iter().zip(matches.iter()) {
+                pp.record_success(*p, idx((*m).min(leader_last)));
+            }
+
+            let cluster_size = peers.len() + 1; // +1 for leader
+            let threshold = cluster_size / 2 + 1;
+
+            let majority = pp.majority_index(idx(leader_last));
+
+            // Collect all values including leader's.
+            let mut all: Vec<u64> = peers
+                .iter()
+                .map(|p| pp.match_for(*p).unwrap().get())
+                .collect();
+            all.push(leader_last);
+
+            // Classical: count how many are >= `majority`. Must be >= threshold.
+            let count_at_or_above = all.iter().filter(|v| **v >= majority.get()).count();
+            prop_assert!(
+                count_at_or_above >= threshold,
+                "majority {:?} lacks classical threshold ({count_at_or_above} < {threshold}) over {all:?}",
+                majority,
+            );
+            // And `majority + 1` must NOT meet the threshold (else our
+            // answer was unnecessarily low).
+            let count_above = all.iter().filter(|v| **v > majority.get()).count();
+            prop_assert!(
+                count_above < threshold,
+                "majority {:?} is not the maximum such N: {count_above} values are strictly greater (threshold {threshold})",
+                majority,
+            );
+        }
+
+        /// Under any adversarial interleaving of `record_success` and
+        /// `record_conflict` calls, the peer's `matchIndex` is
+        /// monotonically non-decreasing — `record_conflict` does not
+        /// touch matchIndex at all, and stale success acks are
+        /// rejected.
+        #[test]
+        fn match_index_monotonic_under_success_conflict_interleavings(
+            ops in proptest::collection::vec(
+                (any::<bool>(), 0u64..50u64),
+                1..60,
+            ),
+        ) {
+            let peer = node(2);
+            let mut pp = PeerProgress::new([peer], idx(100));
+            let mut last_match = LogIndex::ZERO;
+            for (is_success, v) in ops {
+                if is_success {
+                    pp.record_success(peer, idx(v));
+                } else {
+                    pp.record_conflict(peer, idx(v));
+                }
+                let now = pp.match_for(peer).expect("peer known");
+                prop_assert!(
+                    now >= last_match,
+                    "matchIndex regressed: {last_match:?} -> {now:?}",
+                );
+                last_match = now;
+            }
+        }
     }
 }

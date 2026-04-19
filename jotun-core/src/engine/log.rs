@@ -344,6 +344,89 @@ mod tests {
         assert_eq!(log.len(), 3);
     }
 
+    // ---------------- proptests ----------------
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// truncate_from(k) then appending fresh entries at >= k leaves
+        /// a log with contiguous indices starting at first_index() and
+        /// terms that don't regress. Pins that truncate doesn't leave
+        /// the log in a state where the next append would violate the
+        /// debug invariant.
+        #[test]
+        fn truncate_then_append_reestablishes_contiguous_log(
+            initial_terms in proptest::collection::vec(1u64..=5u64, 1..20),
+            trunc_from in 1u64..=25u64,
+            new_terms in proptest::collection::vec(1u64..=9u64, 0..10),
+        ) {
+            let mut log: Log<Vec<u8>> = Log::new();
+            // Force non-decreasing terms for initial entries — a valid
+            // Raft log never has a term regression.
+            let mut running = 0u64;
+            for (i, t) in initial_terms.iter().enumerate() {
+                running = running.max(*t);
+                log.append(entry((i as u64) + 1, running));
+            }
+            let last_term_before = log.last_log_id().map_or(Term::ZERO, |id| id.term);
+            log.truncate_from(idx(trunc_from));
+
+            // Append fresh entries at the tail with non-decreasing terms.
+            let start = log.last_log_id().map_or(1, |id| id.index.get() + 1);
+            let mut t_min = log
+                .last_log_id()
+                .map_or(last_term_before.get(), |id| id.term.get());
+            for (offset, t) in new_terms.iter().enumerate() {
+                t_min = t_min.max(*t);
+                log.append(entry(start + offset as u64, t_min));
+            }
+
+            // Check contiguity and non-decreasing terms.
+            let first = log.first_index();
+            let mut prev_term: Option<Term> = None;
+            for offset in 0..log.len() {
+                let i = LogIndex::new(first.get() + offset as u64);
+                let e = log.entry_at(i).expect("entry missing after append");
+                prop_assert_eq!(e.id.index, i);
+                if let Some(pt) = prev_term {
+                    prop_assert!(e.id.term >= pt);
+                }
+                prev_term = Some(e.id.term);
+            }
+            log.check_invariants();
+        }
+
+        /// install_snapshot followed by appends past the floor yields a
+        /// well-formed log: first in-memory entry sits at floor+1, terms
+        /// are >= snapshot term, and check_invariants is silent.
+        #[test]
+        fn install_snapshot_then_append_is_well_formed(
+            snap_idx in 1u64..20,
+            snap_term_n in 1u64..10,
+            appends in proptest::collection::vec(1u64..20, 0..10),
+        ) {
+            let mut log: Log<Vec<u8>> = Log::new();
+            log.install_snapshot(idx(snap_idx), term(snap_term_n));
+            prop_assert_eq!(log.first_index(), idx(snap_idx + 1));
+            prop_assert!(log.is_empty());
+
+            let mut t_min = snap_term_n;
+            for (offset, t) in appends.iter().enumerate() {
+                t_min = t_min.max(*t);
+                log.append(entry(snap_idx + 1 + offset as u64, t_min));
+            }
+            // All appended entries must respect snapshot floor.
+            let first = log.first_index();
+            prop_assert_eq!(first, idx(snap_idx + 1));
+            for offset in 0..log.len() {
+                let i = LogIndex::new(first.get() + offset as u64);
+                let e = log.entry_at(i).expect("entry missing past snapshot");
+                prop_assert!(e.id.term >= term(snap_term_n));
+            }
+            log.check_invariants();
+        }
+    }
+
     #[test]
     fn truncate_from_just_above_snapshot_floor_drops_everything() {
         // Snapshot floor at 5; entries 6..=8 in memory. Truncating
