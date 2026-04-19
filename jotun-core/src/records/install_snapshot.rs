@@ -23,6 +23,8 @@ pub struct RequestInstallSnapshot {
     pub last_included: LogId,
     /// Opaque application bytes. The receiver hands these to its
     /// state machine via `Action::ApplySnapshot` after persisting.
+    /// The protocol never inspects these bytes; any compression is a
+    /// host-side concern applied inside `StateMachine::snapshot`.
     pub data: Vec<u8>,
     /// Byte offset this chunk starts at within the logical snapshot
     /// stream. `0` starts a fresh transfer; non-zero values resume an

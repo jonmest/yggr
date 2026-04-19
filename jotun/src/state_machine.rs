@@ -63,6 +63,11 @@ pub trait StateMachine: Send + 'static {
     /// signalling "no snapshot". Override this if you want the runtime
     /// to auto-compact on snapshot hints, or if your host integration
     /// plans to cut snapshots explicitly.
+    ///
+    /// Return the raw snapshot bytes. If you want compression, compress
+    /// here and decompress inside [`Self::restore`] — jotun does not
+    /// compress for you and does not assume any particular format. zstd
+    /// is a common choice for Raft snapshots; lz4 when CPU is precious.
     fn snapshot(&self) -> Vec<u8> {
         Vec::new()
     }
@@ -71,6 +76,10 @@ pub trait StateMachine: Send + 'static {
     /// — only override if you also override [`Self::snapshot`].
     /// Called when the runtime recovers from disk after a crash, or
     /// when an incoming leader `InstallSnapshot` arrives at this node.
+    ///
+    /// The bytes are whatever [`Self::snapshot`] produced. If you
+    /// compressed there, decompress here — the runtime hands the bytes
+    /// through untouched.
     fn restore(&mut self, _bytes: Vec<u8>) {
         panic!(
             "StateMachine::restore not implemented; override it if your \

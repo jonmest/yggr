@@ -57,6 +57,9 @@ pub enum Action<C> {
     /// restart and snapshot-based catch-up. Without this, committed
     /// `AddPeer` / `RemovePeer` entries that get snapshotted would be
     /// lost on recovery and the node would compute the wrong majority.
+    ///
+    /// `bytes` is whatever the host's `StateMachine::snapshot` returned;
+    /// compression is a host-side concern — see `StateMachine::snapshot`.
     PersistSnapshot {
         last_included_index: LogIndex,
         last_included_term: Term,
