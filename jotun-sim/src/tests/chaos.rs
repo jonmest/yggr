@@ -18,23 +18,23 @@ use crate::cluster::Policy;
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 32,
+        cases: 128,
         .. ProptestConfig::default()
     })]
 
     /// Chaos: drops, reorder, partitions, crashes, partial flushes.
-    /// 300 steps. Must not panic — safety holds even here. Liveness
-    /// is not asserted; the scheduler is allowed to permanently
-    /// partition the cluster.
+    /// Must not panic — safety holds even here. Liveness is not
+    /// asserted; the scheduler is allowed to permanently partition
+    /// the cluster.
     #[test]
     fn chaos_schedule_preserves_safety(seed in any::<u64>()) {
         let mut cluster: Cluster<u64> = Cluster::new(seed, 3);
         cluster.set_policy(Policy::chaos(Some(1)));
-        for _ in 0..300 {
+        for _ in 0..1500 {
             cluster.step();
         }
         // If we got here, no safety violation fired.
-        prop_assert!(cluster.history_len() == 300);
+        prop_assert!(cluster.history_len() == 1500);
     }
 
     /// 5-node chaos: more room for elections to race, more chances
@@ -43,12 +43,24 @@ proptest! {
     fn chaos_schedule_five_nodes_preserves_safety(seed in any::<u64>()) {
         let mut cluster: Cluster<u64> = Cluster::new(seed, 5);
         cluster.set_policy(Policy::chaos(Some(1)));
-        for _ in 0..500 {
+        for _ in 0..1500 {
             cluster.step();
         }
-        prop_assert!(cluster.history_len() == 500);
+        prop_assert!(cluster.history_len() == 1500);
     }
 
+    /// 7-node chaos: majority=4, quorum-splitting partitions become
+    /// more common, and more peers means more matchIndex combinations
+    /// that must all satisfy the §5.3 commit condition. Safety holds.
+    #[test]
+    fn chaos_schedule_seven_nodes_preserves_safety(seed in any::<u64>()) {
+        let mut cluster: Cluster<u64> = Cluster::new(seed, 7);
+        cluster.set_policy(Policy::chaos(Some(1)));
+        for _ in 0..2000 {
+            cluster.step();
+        }
+        prop_assert!(cluster.history_len() == 2000);
+    }
 }
 
 /// Sanity check: the recover path actually works end-to-end — a

@@ -283,17 +283,10 @@ fn apply_write<C>(persisted: &mut PersistedState<C>, write: PendingWrite<C>) {
 /// (role, commit_index, last_applied) stays at the engine's default
 /// follower boot.
 fn hydrate_engine<C: Clone>(engine: &mut Engine<C>, persisted: &PersistedState<C>) {
-    use jotun_core::{Event, Incoming, Message, RequestAppendEntries};
+    use jotun_core::{RecoveredHardState, RecoveredSnapshot};
 
-    // The engine exposes no public setter for term / log. We drive it
-    // through the only public mutator — `step` — using a synthetic
-    // `AppendEntries` at the persisted term that carries the persisted
-    // log. The engine appends entries, bumps term, and records
-    // `voted_for = None`. If the persisted `voted_for` was `Some`, we
-    // follow up with a `RequestVote` from that candidate at the same
-    // term to restore the vote.
-    //
-    // If nothing persisted at all, no hydration needed.
+    // Early-exit when there's nothing persisted — a freshly-booted
+    // node recovers to its default state.
     if persisted.current_term == Term::ZERO
         && persisted.log.is_empty()
         && persisted.snapshot.is_none()
@@ -301,95 +294,25 @@ fn hydrate_engine<C: Clone>(engine: &mut Engine<C>, persisted: &PersistedState<C
         return;
     }
 
-    // Pick a peer as the synthetic "leader" of the hydration message
-    // that is NOT the persisted voted_for — otherwise the follow-up
-    // vote-restoration step has nothing to send from.
-    let peer = engine
-        .peers()
-        .iter()
-        .copied()
-        .find(|p| Some(*p) != persisted.voted_for)
-        .or_else(|| engine.peers().iter().copied().next());
-    let Some(peer) = peer else {
-        return;
-    };
-
-    // If we have a snapshot, install it first via a forged
-    // InstallSnapshot RPC. That sets the floor, advances commit and
-    // last_applied past it, and drops any in-memory log we'd otherwise
-    // try to feed below the floor.
-    let snapshot_index = if let Some(snap) = &persisted.snapshot {
-        use jotun_core::RequestInstallSnapshot;
-        let _ = engine.step(Event::Incoming(Incoming {
-            from: peer,
-            message: Message::InstallSnapshotRequest(RequestInstallSnapshot {
-                term: persisted.current_term,
-                leader_id: peer,
-                last_included: LogId::new(snap.last_included_index, snap.last_included_term),
-                data: snap.bytes.clone(),
-                offset: 0,
-                done: true,
-                leader_commit: snap.last_included_index,
-                peers: snap.peers.clone(),
-            }),
-        }));
-        snap.last_included_index
-    } else {
-        LogIndex::ZERO
-    };
-
-    // Feed any post-snapshot log entries via a synthetic AE. prev_log_id
-    // points at the snapshot tail (or None if there's no snapshot) so
-    // the engine accepts cleanly.
-    let post_snapshot: Vec<_> = persisted
-        .log
-        .iter()
-        .filter(|e| e.id.index.get() > snapshot_index.get())
-        .cloned()
-        .collect();
-    if !post_snapshot.is_empty() || snapshot_index == LogIndex::ZERO {
-        let prev_log_id = persisted
-            .snapshot
-            .as_ref()
-            .filter(|_| snapshot_index != LogIndex::ZERO)
-            .map(|snap| LogId::new(snap.last_included_index, snap.last_included_term));
-        let request = RequestAppendEntries {
-            term: persisted.current_term,
-            leader_id: peer,
-            prev_log_id,
-            entries: post_snapshot,
-            leader_commit: LogIndex::ZERO,
-        };
-        let _ = engine.step(Event::Incoming(Incoming {
-            from: peer,
-            message: Message::AppendEntriesRequest(request),
-        }));
-    }
-
-    if let Some(voted_for) = persisted.voted_for
-        && voted_for != peer
-    {
-        // Forge a vote request from `voted_for` so the engine records
-        // its vote for that candidate at the current term. The log
-        // predicate requires the candidate's log to be at least as
-        // up-to-date — we pass the persisted last log id, which the
-        // engine itself now holds, so the predicate passes.
-        use jotun_core::RequestVote;
-        let last_log_id = persisted.log.last().map(|e| e.id).or_else(|| {
-            persisted
-                .snapshot
-                .as_ref()
-                .map(|s| LogId::new(s.last_included_index, s.last_included_term))
-        });
-        let _ = engine.step(Event::Incoming(Incoming {
-            from: voted_for,
-            message: Message::VoteRequest(RequestVote {
-                term: persisted.current_term,
-                candidate_id: voted_for,
-                last_log_id,
-            }),
-        }));
-    }
+    // Use the engine's public recovery API. Synthetic RPCs used to
+    // work for non-self voted_for, but `on_incoming` drops messages
+    // whose `from` isn't in the peer set — so a node that voted for
+    // itself (candidate in the persisted term) would lose its
+    // self-vote on recover. That broke §5.1: a peer could win the
+    // same term by collecting the re-granted vote, producing two
+    // leaders in one term.
+    let snapshot = persisted.snapshot.as_ref().map(|s| RecoveredSnapshot {
+        last_included_index: s.last_included_index,
+        last_included_term: s.last_included_term,
+        peers: s.peers.clone(),
+        bytes: s.bytes.clone(),
+    });
+    engine.recover_from(RecoveredHardState {
+        current_term: persisted.current_term,
+        voted_for: persisted.voted_for,
+        snapshot,
+        post_snapshot_log: persisted.log.clone(),
+    });
 }
 
 /// Something a `Send` action needs to have been persisted before it,

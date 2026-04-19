@@ -14,7 +14,7 @@ use crate::cluster::Policy;
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 64,
+        cases: 128,
         .. ProptestConfig::default()
     })]
 

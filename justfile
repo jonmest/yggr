@@ -8,11 +8,15 @@ check:
     cargo check --all-targets
 
 test:
-    cargo nextest run --lib
+    cargo nextest run --workspace --all-targets
+    cargo test --workspace --doc
 
-test-all:
-    cargo nextest run
-    cargo test --doc
+# Alias for the fuller run; kept for callers that reach for it.
+test-all: test
+
+# Quick feedback loop: lib tests only, skip integration + doc tests.
+test-lib:
+    cargo nextest run --lib
 
 fmt:
     cargo fmt
