@@ -12,6 +12,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  JOTUN_COVERAGE_MIN_LINES: "86.5"
   JOTUN_RUNTIME_CHAOS_CASES: "16"
 
 permissions:
@@ -101,10 +102,57 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Install protoc + mold linker
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
-      - run: cargo llvm-cov --workspace --all-targets --summary-only
+      - name: Enforce coverage floor
+        run: cargo llvm-cov --workspace --all-targets --summary-only --fail-under-lines "$JOTUN_COVERAGE_MIN_LINES"
+      - name: Export coverage reports
+        if: always()
+        run: |
+          mkdir -p coverage
+          # `cargo llvm-cov report --json` currently SIGBUSes on this
+          # workspace's saved profile data; the main command is stable.
+          cargo llvm-cov --workspace --all-targets --no-run --json --summary-only --output-path coverage/summary.json
+          cargo llvm-cov report --lcov --output-path coverage/lcov.info
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-reports
+          path: coverage
+          if-no-files-found: ignore
+          retention-days: 14
 
-  mutants:
-    name: cargo-mutants
+  mutants-smoke:
+    name: cargo-mutants-smoke
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
+        with:
+          tool: cargo-mutants
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
+      - name: Run diff-scoped mutant smoke
+        run: cargo mutants -p jotun-core -p jotun --in-diff "origin/${{ github.base_ref }}...HEAD" --baseline skip --timeout 120 --output target/mutants/smoke
+      - name: Upload cargo-mutants smoke report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cargo-mutants-smoke
+          path: target/mutants/smoke
+          if-no-files-found: ignore
+          retention-days: 14
+
+  mutants-nightly:
+    name: cargo-mutants-nightly
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -121,7 +169,33 @@ jobs:
           tool: cargo-mutants
       - name: Install protoc + mold linker
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
-      - run: cargo mutants -p jotun-core -p jotun --timeout 300
+      - name: Run full cargo-mutants sweep
+        run: cargo mutants -p jotun-core -p jotun --timeout 300 --output target/mutants/full
+      - name: Upload cargo-mutants full report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cargo-mutants-full
+          path: target/mutants/full
+          if-no-files-found: ignore
+          retention-days: 14
+
+  core-proptests-nightly:
+    name: core-proptests-nightly
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      JOTUN_CORE_INVARIANT_CASES: "1024"
+      JOTUN_CORE_MONOTONIC_CASES: "4096"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo test -p jotun-core engine::tests::invariants::
 
   deny:
     name: cargo-deny
@@ -180,4 +254,42 @@ jobs:
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts
+          retention-days: 14
+
+  fuzz-nightly:
+    name: fuzz-nightly (${{ matrix.target }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_proto_message
+          - fuzz_engine_events
+          - fuzz_disk_storage_recover
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: taiki-e/install-action@055f5df8c3f65ea01cd41e9dc855becd88953486 # v2.75.18
+        with:
+          tool: cargo-fuzz
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
+      - name: Run nightly fuzz target
+        run: cd fuzz && cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} corpus/${{ matrix.target }} -- -max_total_time=300
+      - name: Upload nightly fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-nightly-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}
+            fuzz/corpus/${{ matrix.target }}
+          if-no-files-found: ignore
           retention-days: 14

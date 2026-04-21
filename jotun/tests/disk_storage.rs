@@ -178,6 +178,37 @@ async fn log_truncate_drops_tail() {
 }
 
 #[tokio::test]
+async fn append_log_overwrite_drops_stale_tail() {
+    let tmp = TmpDir::new();
+    let mut s: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
+    <DiskStorage as Storage<Vec<u8>>>::append_log(
+        &mut s,
+        vec![
+            entry(1, 1, b"a"),
+            entry(2, 1, b"b"),
+            entry(3, 2, b"c"),
+            entry(4, 2, b"d"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    <DiskStorage as Storage<Vec<u8>>>::append_log(&mut s, vec![entry(3, 3, b"x")])
+        .await
+        .unwrap();
+
+    drop(s);
+    let mut reopened: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();
+    let recovered = <DiskStorage as Storage<Vec<u8>>>::recover(&mut reopened)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered.log,
+        vec![entry(1, 1, b"a"), entry(2, 1, b"b"), entry(3, 3, b"x")]
+    );
+}
+
+#[tokio::test]
 async fn snapshot_replaces_log_prefix() {
     let tmp = TmpDir::new();
     let mut s: DiskStorage = DiskStorage::open(&tmp.0).await.unwrap();

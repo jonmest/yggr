@@ -157,6 +157,7 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
     }
 
     async fn append_log(&mut self, entries: Vec<LogEntry<C>>) -> Result<(), Self::Error> {
+        let mut truncated = false;
         for entry in entries {
             let i = entry.id.index.get();
             let snap_floor = self
@@ -167,11 +168,12 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
                 continue;
             }
             let local_idx = (i - snap_floor - 1) as usize;
-            if local_idx < self.log.len() {
-                self.log[local_idx] = entry;
-            } else {
-                self.log.push(entry);
+            if !truncated {
+                let keep = local_idx.min(self.log.len());
+                self.log.truncate(keep);
+                truncated = true;
             }
+            self.log.push(entry);
         }
         Ok(())
     }
@@ -250,6 +252,48 @@ async fn memory_storage_round_trips_log_with_snapshot_floor() {
     assert_eq!(r.log.len(), 2);
     assert_eq!(r.log[0].id.index, LogIndex::new(4));
     assert_eq!(r.log[1].id.index, LogIndex::new(5));
+}
+
+#[tokio::test]
+async fn memory_storage_append_log_overwrite_drops_stale_tail() {
+    use jotun_core::types::log::LogId;
+    use jotun_core::{LogEntry, LogPayload};
+
+    let mut s: MemoryStorage<Vec<u8>> = MemoryStorage::default();
+    s.append_log(vec![
+        LogEntry {
+            id: LogId::new(LogIndex::new(1), Term::new(1)),
+            payload: LogPayload::Command(b"a".to_vec()),
+        },
+        LogEntry {
+            id: LogId::new(LogIndex::new(2), Term::new(1)),
+            payload: LogPayload::Command(b"b".to_vec()),
+        },
+        LogEntry {
+            id: LogId::new(LogIndex::new(3), Term::new(2)),
+            payload: LogPayload::Command(b"c".to_vec()),
+        },
+        LogEntry {
+            id: LogId::new(LogIndex::new(4), Term::new(2)),
+            payload: LogPayload::Command(b"d".to_vec()),
+        },
+    ])
+    .await
+    .unwrap();
+
+    s.append_log(vec![LogEntry {
+        id: LogId::new(LogIndex::new(3), Term::new(3)),
+        payload: LogPayload::Command(b"x".to_vec()),
+    }])
+    .await
+    .unwrap();
+
+    let recovered = s.recover().await.unwrap();
+    assert_eq!(recovered.log.len(), 3);
+    assert_eq!(recovered.log[0].id.index, LogIndex::new(1));
+    assert_eq!(recovered.log[1].id.index, LogIndex::new(2));
+    assert_eq!(recovered.log[2].id.index, LogIndex::new(3));
+    assert_eq!(recovered.log[2].payload, LogPayload::Command(b"x".to_vec()));
 }
 
 // ---------------------------------------------------------------------------

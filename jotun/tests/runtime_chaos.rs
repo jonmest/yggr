@@ -9,6 +9,10 @@
 //! We assert:
 //!  - Election Safety (§5.2): at most one leader per term across the
 //!    lifetime of the run.
+//!  - Committed-prefix consistency: any two nodes that have committed
+//!    the same index persist the same entry at that index.
+//!  - Leader Completeness (§5.4): every later leader still contains
+//!    every entry we have previously observed as committed.
 //!  - State-machine consistency: if any two nodes apply a committed
 //!    index, they apply the same command at that index.
 //!  - Liveness under bounded faults: with only transient drops/delays
@@ -30,8 +34,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jotun::{
-    Config, DecodeError, Node, NodeId, ProposeError, StateMachine, Storage, StoredHardState,
-    StoredSnapshot, Transport,
+    Config, DecodeError, Node, NodeId, NodeStatus, ProposeError, Role, StateMachine, Storage,
+    StoredHardState, StoredSnapshot, Transport,
 };
 use jotun_core::{Incoming, LogEntry, LogIndex, Message, Term};
 use tokio::sync::mpsc;
@@ -228,19 +232,20 @@ struct CountCmd(u64);
 
 /// Per-node state machine. Records every applied `(index, cmd)` into
 /// a shared observation log so the harness can assert that no two
-/// nodes applied different commands at the same index.
+/// nodes applied different commands at the same position in the
+/// committed command stream.
 #[derive(Debug)]
 struct TrackedCounter {
     node_id: NodeId,
     value: u64,
-    applied_index: Arc<AtomicU64>,
+    applied_commands: Arc<AtomicU64>,
     observed: Arc<Mutex<Vec<AppliedObservation>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct AppliedObservation {
     node: NodeId,
-    index: LogIndex,
+    command_ordinal: u64,
     cmd: CountCmd,
 }
 
@@ -259,10 +264,10 @@ impl StateMachine for TrackedCounter {
     }
     fn apply(&mut self, cmd: CountCmd) -> u64 {
         self.value = self.value.wrapping_add(cmd.0);
-        let idx = self.applied_index.fetch_add(1, Ordering::Relaxed) + 1;
+        let command_ordinal = self.applied_commands.fetch_add(1, Ordering::Relaxed) + 1;
         self.observed.lock().unwrap().push(AppliedObservation {
             node: self.node_id,
-            index: LogIndex::new(idx),
+            command_ordinal,
             cmd,
         });
         self.value
@@ -274,11 +279,22 @@ struct MemoryStorage {
     inner: Arc<Mutex<MemoryStorageInner>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct MemoryStorageInner {
     hard_state: Option<StoredHardState>,
     snapshot: Option<StoredSnapshot>,
     log: Vec<LogEntry<Vec<u8>>>,
+}
+
+impl MemoryStorageInner {
+    fn entry_at(&self, index: LogIndex) -> Option<&LogEntry<Vec<u8>>> {
+        let snapshot_floor = self
+            .snapshot
+            .as_ref()
+            .map_or(LogIndex::ZERO, |snapshot| snapshot.last_included_index);
+        let offset = index.get().checked_sub(snapshot_floor.get() + 1)?;
+        self.log.get(usize::try_from(offset).ok()?)
+    }
 }
 
 impl Storage<Vec<u8>> for MemoryStorage {
@@ -302,6 +318,7 @@ impl Storage<Vec<u8>> for MemoryStorage {
             .snapshot
             .as_ref()
             .map_or(0, |s| s.last_included_index.get());
+        let mut truncated = false;
         for entry in entries {
             let i = entry.id.index.get();
             if i <= snap_floor {
@@ -310,11 +327,12 @@ impl Storage<Vec<u8>> for MemoryStorage {
             let Ok(local) = usize::try_from(i - snap_floor - 1) else {
                 continue;
             };
-            if let Some(slot) = g.log.get_mut(local) {
-                *slot = entry;
-            } else {
-                g.log.push(entry);
+            if !truncated {
+                let keep = local.min(g.log.len());
+                g.log.truncate(keep);
+                truncated = true;
             }
+            g.log.push(entry);
         }
         Ok(())
     }
@@ -353,12 +371,19 @@ impl Storage<Vec<u8>> for MemoryStorage {
 struct ClusterNode {
     id: NodeId,
     node: Node<TrackedCounter>,
+    storage: MemoryStorage,
+    applied_commands: Arc<AtomicU64>,
 }
 
 struct Cluster {
     nodes: Vec<ClusterNode>,
     network: Network,
     observed: Arc<Mutex<Vec<AppliedObservation>>>,
+}
+
+struct ClusterObservation {
+    statuses: BTreeMap<NodeId, NodeStatus>,
+    storages: BTreeMap<NodeId, MemoryStorageInner>,
 }
 
 impl Cluster {
@@ -376,18 +401,29 @@ impl Cluster {
             config.heartbeat_interval_ticks = 1;
             config.tick_interval = Duration::from_millis(10);
             config.max_pending_proposals = 256;
+            // Keep the full durable log visible in runtime-chaos tests
+            // so the harness can compare committed prefixes directly.
+            config.snapshot_hint_threshold_entries = 0;
 
+            let applied_commands = Arc::new(AtomicU64::new(0));
             let sm = TrackedCounter {
                 node_id: id,
                 value: 0,
-                applied_index: Arc::new(AtomicU64::new(0)),
+                applied_commands: Arc::clone(&applied_commands),
                 observed: Arc::clone(&observed),
             };
             let transport = ChaosTransport::start(id, network.clone());
             let storage = MemoryStorage::default();
 
-            let node = Node::start(config, sm, storage, transport).await.unwrap();
-            nodes.push(ClusterNode { id, node });
+            let node = Node::start(config, sm, storage.clone(), transport)
+                .await
+                .unwrap();
+            nodes.push(ClusterNode {
+                id,
+                node,
+                storage,
+                applied_commands,
+            });
         }
 
         Self {
@@ -401,13 +437,29 @@ impl Cluster {
         &self.nodes
     }
 
+    async fn observe(&self) -> ClusterObservation {
+        let mut statuses = BTreeMap::new();
+        let mut storages = BTreeMap::new();
+        for node in &self.nodes {
+            statuses.insert(
+                node.id,
+                node.node
+                    .status()
+                    .await
+                    .expect("runtime-chaos node status must stay readable"),
+            );
+            storages.insert(node.id, node.storage.inner.lock().unwrap().clone());
+        }
+        ClusterObservation { statuses, storages }
+    }
+
     /// Leader from any node's view. Returns Some(id) if every node
     /// that thinks there's a leader agrees, else None.
     async fn unique_leader(&self) -> Option<NodeId> {
         let mut leaders: HashSet<NodeId> = HashSet::new();
         for n in &self.nodes {
             if let Ok(s) = n.node.status().await
-                && s.role.to_string() == "leader"
+                && s.role == Role::Leader
             {
                 leaders.insert(s.node_id);
             }
@@ -445,24 +497,46 @@ impl Cluster {
         }
     }
 
+    async fn wait_for_all_nodes_to_apply_commands(&self, expected: u64, deadline: Duration) {
+        let start = std::time::Instant::now();
+        loop {
+            let observation = self.observe().await;
+            self.check_committed_prefix_consistency(&observation);
+            self.check_apply_consistency();
+            if self
+                .nodes
+                .iter()
+                .all(|node| node.applied_commands.load(Ordering::Relaxed) >= expected)
+            {
+                return;
+            }
+            assert!(
+                start.elapsed() < deadline,
+                "not every node applied {expected} commands within {deadline:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     /// Assert Raft Election Safety: at most one node ever claims the
     /// leader role for any given term. Reads the set of terms each
     /// node has seen via `status()` and tracks which have been claimed.
-    async fn check_election_safety(&self, leaders_by_term: &mut BTreeMap<Term, NodeId>) {
-        for n in &self.nodes {
-            let Ok(s) = n.node.status().await else {
-                continue;
-            };
-            if s.role.to_string() == "leader" {
-                match leaders_by_term.get(&s.current_term) {
+    fn check_election_safety(
+        &self,
+        observation: &ClusterObservation,
+        leaders_by_term: &mut BTreeMap<Term, NodeId>,
+    ) {
+        for status in observation.statuses.values() {
+            if status.role == Role::Leader {
+                match leaders_by_term.get(&status.current_term) {
                     None => {
-                        leaders_by_term.insert(s.current_term, s.node_id);
+                        leaders_by_term.insert(status.current_term, status.node_id);
                     }
                     Some(&prior) => {
                         assert_eq!(
-                            prior, s.node_id,
+                            prior, status.node_id,
                             "Election Safety violated: term {:?} has leaders {} AND {}",
-                            s.current_term, prior, s.node_id,
+                            status.current_term, prior, status.node_id,
                         );
                     }
                 }
@@ -470,21 +544,167 @@ impl Cluster {
         }
     }
 
+    fn check_status_monotonicity(
+        &self,
+        observation: &ClusterObservation,
+        prior_statuses: &mut BTreeMap<NodeId, NodeStatus>,
+    ) {
+        for (node_id, status) in &observation.statuses {
+            assert!(
+                status.last_applied <= status.commit_index,
+                "node {node_id} last_applied {:?} exceeded commit_index {:?}",
+                status.last_applied,
+                status.commit_index,
+            );
+            if let Some(previous) = prior_statuses.insert(*node_id, status.clone()) {
+                assert!(
+                    status.current_term >= previous.current_term,
+                    "node {node_id} term regressed: {:?} -> {:?}",
+                    previous.current_term,
+                    status.current_term,
+                );
+                assert!(
+                    status.commit_index >= previous.commit_index,
+                    "node {node_id} commit index regressed: {:?} -> {:?}",
+                    previous.commit_index,
+                    status.commit_index,
+                );
+                assert!(
+                    status.last_applied >= previous.last_applied,
+                    "node {node_id} last_applied regressed: {:?} -> {:?}",
+                    previous.last_applied,
+                    status.last_applied,
+                );
+            }
+        }
+    }
+
+    fn check_committed_prefix_consistency(&self, observation: &ClusterObservation) {
+        let node_ids: Vec<NodeId> = observation.statuses.keys().copied().collect();
+        for (index, left_id) in node_ids.iter().enumerate() {
+            for right_id in node_ids.iter().skip(index + 1) {
+                let left_status = &observation.statuses[left_id];
+                let right_status = &observation.statuses[right_id];
+                let left_storage = &observation.storages[left_id];
+                let right_storage = &observation.storages[right_id];
+                let shared_commit =
+                    std::cmp::min(left_status.commit_index, right_status.commit_index);
+                for raw_index in 1..=shared_commit.get() {
+                    let log_index = LogIndex::new(raw_index);
+                    let left_entry = left_storage.entry_at(log_index).unwrap_or_else(|| {
+                        panic!(
+                            "node {} missing committed entry {:?} at commit {:?}",
+                            left_id, log_index, left_status.commit_index
+                        )
+                    });
+                    let right_entry = right_storage.entry_at(log_index).unwrap_or_else(|| {
+                        panic!(
+                            "node {} missing committed entry {:?} at commit {:?}",
+                            right_id, log_index, right_status.commit_index
+                        )
+                    });
+                    assert_eq!(
+                        left_entry, right_entry,
+                        "Committed-prefix mismatch at {:?} between node {} and node {}",
+                        log_index, left_id, right_id,
+                    );
+                }
+            }
+        }
+    }
+
+    fn extend_committed_prefix(
+        &self,
+        observation: &ClusterObservation,
+        committed_prefix: &mut BTreeMap<LogIndex, LogEntry<Vec<u8>>>,
+    ) {
+        let max_recorded = committed_prefix
+            .last_key_value()
+            .map(|(index, _)| *index)
+            .unwrap_or(LogIndex::ZERO);
+        let source = observation
+            .statuses
+            .values()
+            .max_by_key(|status| status.commit_index)
+            .expect("cluster must have statuses");
+        if source.commit_index <= max_recorded {
+            return;
+        }
+        let storage = &observation.storages[&source.node_id];
+        for raw_index in (max_recorded.get() + 1)..=source.commit_index.get() {
+            let log_index = LogIndex::new(raw_index);
+            let entry = storage.entry_at(log_index).unwrap_or_else(|| {
+                panic!(
+                    "node {} reports commit {:?} but has no persisted entry at {:?}",
+                    source.node_id, source.commit_index, log_index
+                )
+            });
+            if let Some(previous) = committed_prefix.insert(log_index, entry.clone()) {
+                assert_eq!(
+                    previous, *entry,
+                    "Committed prefix changed at {:?} after it was observed",
+                    log_index,
+                );
+            }
+        }
+    }
+
+    fn check_leader_completeness(
+        &self,
+        observation: &ClusterObservation,
+        committed_prefix: &BTreeMap<LogIndex, LogEntry<Vec<u8>>>,
+    ) {
+        for status in observation
+            .statuses
+            .values()
+            .filter(|status| status.role == Role::Leader)
+        {
+            let storage = &observation.storages[&status.node_id];
+            for (log_index, committed_entry) in committed_prefix {
+                let leader_entry = storage.entry_at(*log_index).unwrap_or_else(|| {
+                    panic!(
+                        "Leader Completeness violated: leader {} at term {:?} lacks committed entry {:?}",
+                        status.node_id, status.current_term, log_index,
+                    )
+                });
+                assert_eq!(
+                    leader_entry, committed_entry,
+                    "Leader Completeness violated at {:?} for leader {} in term {:?}",
+                    log_index, status.node_id, status.current_term,
+                );
+            }
+        }
+    }
+
+    fn check_runtime_safety(
+        &self,
+        observation: &ClusterObservation,
+        prior_statuses: &mut BTreeMap<NodeId, NodeStatus>,
+        leaders_by_term: &mut BTreeMap<Term, NodeId>,
+        committed_prefix: &mut BTreeMap<LogIndex, LogEntry<Vec<u8>>>,
+    ) {
+        self.check_status_monotonicity(observation, prior_statuses);
+        self.check_election_safety(observation, leaders_by_term);
+        self.check_committed_prefix_consistency(observation);
+        self.extend_committed_prefix(observation, committed_prefix);
+        self.check_leader_completeness(observation, committed_prefix);
+    }
+
     /// Assert State-Machine Consistency: every observed apply at the
-    /// same index carries the same command across all nodes.
+    /// same command position carries the same command across all nodes.
     fn check_apply_consistency(&self) {
         let obs = self.observed.lock().unwrap();
-        let mut by_index: BTreeMap<LogIndex, CountCmd> = BTreeMap::new();
+        let mut by_ordinal: BTreeMap<u64, CountCmd> = BTreeMap::new();
         for o in obs.iter() {
-            match by_index.get(&o.index) {
+            match by_ordinal.get(&o.command_ordinal) {
                 None => {
-                    by_index.insert(o.index, o.cmd);
+                    by_ordinal.insert(o.command_ordinal, o.cmd);
                 }
                 Some(&prior) => {
                     assert_eq!(
                         prior, o.cmd,
-                        "State-Machine Consistency violated at index {:?}: node {} applied {:?}, but earlier apply was {:?}",
-                        o.index, o.node, o.cmd, prior,
+                        "State-Machine Consistency violated at command #{:?}: node {} applied {:?}, but earlier apply was {:?}",
+                        o.command_ordinal, o.node, o.cmd, prior,
                     );
                 }
             }
@@ -500,6 +720,9 @@ impl Cluster {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn happy_cluster_elects_leader_and_commits() {
     let cluster = Cluster::new(3, 0xABCD_1234, Policy::happy()).await;
+    let mut prior_statuses = BTreeMap::new();
+    let mut leaders_by_term = BTreeMap::new();
+    let mut committed_prefix = BTreeMap::new();
 
     let leader = cluster
         .wait_for_leader(Duration::from_secs(3))
@@ -511,8 +734,16 @@ async fn happy_cluster_elects_leader_and_commits() {
     let v = cluster.propose_on(leader, CountCmd(7)).await.unwrap();
     assert_eq!(v, 12);
 
-    // Let applies propagate to followers.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    cluster
+        .wait_for_all_nodes_to_apply_commands(2, Duration::from_secs(3))
+        .await;
+    let observation = cluster.observe().await;
+    cluster.check_runtime_safety(
+        &observation,
+        &mut prior_statuses,
+        &mut leaders_by_term,
+        &mut committed_prefix,
+    );
     cluster.check_apply_consistency();
 
     cluster.shutdown().await;
@@ -522,6 +753,9 @@ async fn happy_cluster_elects_leader_and_commits() {
 async fn lossy_cluster_still_commits() {
     // 20% drop rate. Should still elect and commit, just takes longer.
     let cluster = Cluster::new(3, 0xDEAD_BEEF, Policy::lossy(20)).await;
+    let mut prior_statuses = BTreeMap::new();
+    let mut leaders_by_term = BTreeMap::new();
+    let mut committed_prefix = BTreeMap::new();
 
     let leader = cluster
         .wait_for_leader(Duration::from_secs(5))
@@ -536,7 +770,16 @@ async fn lossy_cluster_still_commits() {
     }
     assert!(succeeded >= 1, "no proposal committed under 20% drop");
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    cluster
+        .wait_for_all_nodes_to_apply_commands(u64::from(succeeded), Duration::from_secs(5))
+        .await;
+    let observation = cluster.observe().await;
+    cluster.check_runtime_safety(
+        &observation,
+        &mut prior_statuses,
+        &mut leaders_by_term,
+        &mut committed_prefix,
+    );
     cluster.check_apply_consistency();
     cluster.shutdown().await;
 }
@@ -544,6 +787,9 @@ async fn lossy_cluster_still_commits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partition_heal_cluster_recovers_and_commits() {
     let cluster = Cluster::new(3, 0x1337_C0DE, Policy::happy()).await;
+    let mut prior_statuses = BTreeMap::new();
+    let mut leaders_by_term = BTreeMap::new();
+    let mut committed_prefix = BTreeMap::new();
     let initial_leader = cluster
         .wait_for_leader(Duration::from_secs(3))
         .await
@@ -567,14 +813,24 @@ async fn partition_heal_cluster_recovers_and_commits() {
     );
 
     cluster.network.heal();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    cluster
+        .wait_for_all_nodes_to_apply_commands(1, Duration::from_secs(3))
+        .await;
+    let observation = cluster.observe().await;
+    cluster.check_runtime_safety(
+        &observation,
+        &mut prior_statuses,
+        &mut leaders_by_term,
+        &mut committed_prefix,
+    );
     cluster.check_apply_consistency();
     cluster.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
 // Proptest: hammer the runtime with random seeds under chaos. Must
-// preserve Election Safety and apply consistency across many seeds.
+// preserve Election Safety, committed-prefix consistency, Leader
+// Completeness, and apply consistency across many seeds.
 // ---------------------------------------------------------------------------
 
 use proptest::prelude::*;
@@ -614,11 +870,19 @@ proptest! {
             .unwrap();
         rt.block_on(async move {
             let cluster = Cluster::new(3, seed, Policy::chaotic(10, 5)).await;
+            let mut prior_statuses: BTreeMap<NodeId, NodeStatus> = BTreeMap::new();
             let mut leaders_by_term: BTreeMap<Term, NodeId> = BTreeMap::new();
+            let mut committed_prefix: BTreeMap<LogIndex, LogEntry<Vec<u8>>> = BTreeMap::new();
 
             // Drive the cluster for ~1.5s, occasionally proposing.
             for step in 0..30u32 {
-                cluster.check_election_safety(&mut leaders_by_term).await;
+                let observation = cluster.observe().await;
+                cluster.check_runtime_safety(
+                    &observation,
+                    &mut prior_statuses,
+                    &mut leaders_by_term,
+                    &mut committed_prefix,
+                );
                 if step % 5 == 0
                     && let Some(leader) = cluster.unique_leader().await
                 {
@@ -626,6 +890,13 @@ proptest! {
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
+            let observation = cluster.observe().await;
+            cluster.check_runtime_safety(
+                &observation,
+                &mut prior_statuses,
+                &mut leaders_by_term,
+                &mut committed_prefix,
+            );
             cluster.check_apply_consistency();
             cluster.shutdown().await;
         });

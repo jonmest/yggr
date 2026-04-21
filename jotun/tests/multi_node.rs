@@ -182,8 +182,6 @@ impl TestNode {
     async fn stop(&mut self) {
         if let Some(n) = self.node.take() {
             let _ = n.shutdown().await;
-            // Give background tasks a tick to drain.
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -563,8 +561,6 @@ async fn cluster_survives_full_restart_from_disk() {
     for (n, _) in first_life {
         let _ = n.shutdown().await;
     }
-    // Give background tasks time to release their ports.
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // --- Life 2: reopen from disk on fresh ports. Same data dirs. ---
     let new_ports: Vec<u16> = (0..3).map(|_| free_port()).collect();

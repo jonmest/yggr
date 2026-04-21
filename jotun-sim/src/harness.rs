@@ -239,22 +239,24 @@ fn apply_write<C>(persisted: &mut PersistedState<C>, write: PendingWrite<C>) {
             persisted.voted_for = voted_for;
         }
         PendingWrite::LogEntries(entries) => {
+            let snapshot_floor = persisted
+                .snapshot
+                .as_ref()
+                .map_or(0, |snapshot| snapshot.last_included_index.get());
+            let mut truncated_from = None;
             for entry in entries {
                 let i = entry.id.index.get();
-                if i == 0 {
+                if i == 0 || i <= snapshot_floor {
                     continue;
                 }
-                let idx = (i - 1) as usize;
-                match idx.cmp(&persisted.log.len()) {
-                    std::cmp::Ordering::Less => persisted.log[idx] = entry,
-                    // A gap (idx > log.len()) shouldn't happen given
-                    // the engine emits entries contiguous with its
-                    // in-memory log, but don't silently corrupt the
-                    // snapshot — append anyway.
-                    std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => {
-                        persisted.log.push(entry);
-                    }
+                let local_idx = usize::try_from(i - snapshot_floor - 1)
+                    .expect("log index above snapshot floor fits in usize");
+                if truncated_from.is_none() {
+                    let keep = local_idx.min(persisted.log.len());
+                    persisted.log.truncate(keep);
+                    truncated_from = Some(local_idx);
                 }
+                persisted.log.push(entry);
             }
         }
         PendingWrite::Snapshot {

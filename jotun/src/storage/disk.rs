@@ -402,6 +402,11 @@ where
             return Ok(());
         }
 
+        // `append_log` replaces the durable suffix starting at the
+        // first incoming index. This keeps crash-recovery aligned with
+        // the engine's in-memory follower truncation.
+        <DiskStorage as Storage<C>>::truncate_log(self, entries[0].id.index).await?;
+
         // If we've never written before, seed the first segment with
         // the index of the first entry being appended.
         if self.segments.is_empty() {

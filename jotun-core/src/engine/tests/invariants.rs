@@ -112,11 +112,34 @@ fn apply(engine: &mut crate::engine::engine::Engine<Vec<u8>>, input: &Input) {
     let _ = engine.step(event);
 }
 
+fn proptest_cases(env_var: &str, default: u32) -> u32 {
+    match std::env::var(env_var) {
+        Ok(raw) => raw
+            .parse::<u32>()
+            .ok()
+            .filter(|cases| *cases > 0)
+            .unwrap_or_else(|| panic!("{env_var} must be a positive integer")),
+        Err(std::env::VarError::NotPresent) => default,
+        Err(e) => panic!("failed to read {env_var}: {e}"),
+    }
+}
+
+fn engine_invariant_proptest_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: proptest_cases("JOTUN_CORE_INVARIANT_CASES", 256),
+        ..ProptestConfig::default()
+    }
+}
+
+fn engine_monotonicity_proptest_config() -> ProptestConfig {
+    ProptestConfig {
+        cases: proptest_cases("JOTUN_CORE_MONOTONIC_CASES", 1024),
+        ..ProptestConfig::default()
+    }
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 256,
-        .. ProptestConfig::default()
-    })]
+    #![proptest_config(engine_invariant_proptest_config())]
 
     /// For any sequence of well-formed events, the engine's
     /// debug-only check_invariants (run after every step) must not
@@ -186,10 +209,7 @@ proptest! {
 // ===========================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 1024,
-        .. ProptestConfig::default()
-    })]
+    #![proptest_config(engine_monotonicity_proptest_config())]
 
     /// Drives a single engine with an adversarial batch of Incoming RPCs
     /// from random peers at random terms and asserts §5.1/§5.3 monotonicity:

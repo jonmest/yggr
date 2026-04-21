@@ -131,6 +131,7 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
     }
 
     async fn append_log(&mut self, entries: Vec<LogEntry<C>>) -> Result<(), Self::Error> {
+        let mut truncated = false;
         for entry in entries {
             let i = entry.id.index.get();
             let snap_floor = self
@@ -143,11 +144,12 @@ impl<C: Send + Clone + 'static> Storage<C> for MemoryStorage<C> {
             let Ok(local_idx) = usize::try_from(i - snap_floor - 1) else {
                 continue;
             };
-            if let Some(slot) = self.log.get_mut(local_idx) {
-                *slot = entry;
-            } else {
-                self.log.push(entry);
+            if !truncated {
+                let keep = local_idx.min(self.log.len());
+                self.log.truncate(keep);
+                truncated = true;
             }
+            self.log.push(entry);
         }
         Ok(())
     }
@@ -203,6 +205,7 @@ impl<C: Send + Clone + 'static> Storage<C> for SharedMemoryStorage<C> {
 
     async fn append_log(&mut self, entries: Vec<LogEntry<C>>) -> Result<(), Self::Error> {
         let mut guard = self.inner.lock().unwrap();
+        let mut truncated = false;
         for entry in entries {
             let i = entry.id.index.get();
             let snap_floor = guard
@@ -215,11 +218,12 @@ impl<C: Send + Clone + 'static> Storage<C> for SharedMemoryStorage<C> {
             let Ok(local_idx) = usize::try_from(i - snap_floor - 1) else {
                 continue;
             };
-            if let Some(slot) = guard.log.get_mut(local_idx) {
-                *slot = entry;
-            } else {
-                guard.log.push(entry);
+            if !truncated {
+                let keep = local_idx.min(guard.log.len());
+                guard.log.truncate(keep);
+                truncated = true;
             }
+            guard.log.push(entry);
         }
         Ok(())
     }
@@ -250,6 +254,112 @@ impl<C: Send + Clone + 'static> Storage<C> for SharedMemoryStorage<C> {
         guard.log.drain(..keep_from);
         guard.snapshot = Some(snap);
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailingStorageOp {
+    Recover,
+    PersistHardState,
+    AppendLog,
+    TruncateLog,
+    PersistSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TestStorageError(&'static str);
+
+impl std::fmt::Display for TestStorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for TestStorageError {}
+
+#[derive(Debug, Clone, Default)]
+struct FailingStorage<C> {
+    inner: SharedMemoryStorage<C>,
+    failures: Arc<Mutex<Vec<FailingStorageOp>>>,
+}
+
+impl<C> FailingStorage<C> {
+    fn new(failures: impl IntoIterator<Item = FailingStorageOp>) -> Self {
+        Self {
+            inner: SharedMemoryStorage {
+                inner: Arc::new(Mutex::new(MemoryStorage {
+                    hard_state: None,
+                    snapshot: None,
+                    log: Vec::new(),
+                })),
+            },
+            failures: Arc::new(Mutex::new(failures.into_iter().collect())),
+        }
+    }
+
+    fn should_fail(&self, op: FailingStorageOp) -> bool {
+        let mut failures = self.failures.lock().unwrap();
+        if let Some(index) = failures.iter().position(|candidate| *candidate == op) {
+            failures.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn arm_failure(&self, op: FailingStorageOp) {
+        self.failures.lock().unwrap().push(op);
+    }
+}
+
+impl<C: Send + Clone + 'static> Storage<C> for FailingStorage<C> {
+    type Error = TestStorageError;
+
+    async fn recover(&mut self) -> Result<jotun::storage::RecoveredState<C>, Self::Error> {
+        if self.should_fail(FailingStorageOp::Recover) {
+            return Err(TestStorageError("recover failed"));
+        }
+        self.inner.recover().await.map_err(|never| match never {})
+    }
+
+    async fn persist_hard_state(&mut self, state: StoredHardState) -> Result<(), Self::Error> {
+        if self.should_fail(FailingStorageOp::PersistHardState) {
+            return Err(TestStorageError("persist_hard_state failed"));
+        }
+        self.inner
+            .persist_hard_state(state)
+            .await
+            .map_err(|never| match never {})
+    }
+
+    async fn append_log(&mut self, entries: Vec<LogEntry<C>>) -> Result<(), Self::Error> {
+        if self.should_fail(FailingStorageOp::AppendLog) {
+            return Err(TestStorageError("append_log failed"));
+        }
+        self.inner
+            .append_log(entries)
+            .await
+            .map_err(|never| match never {})
+    }
+
+    async fn truncate_log(&mut self, from: LogIndex) -> Result<(), Self::Error> {
+        if self.should_fail(FailingStorageOp::TruncateLog) {
+            return Err(TestStorageError("truncate_log failed"));
+        }
+        self.inner
+            .truncate_log(from)
+            .await
+            .map_err(|never| match never {})
+    }
+
+    async fn persist_snapshot(&mut self, snap: StoredSnapshot) -> Result<(), Self::Error> {
+        if self.should_fail(FailingStorageOp::PersistSnapshot) {
+            return Err(TestStorageError("persist_snapshot failed"));
+        }
+        self.inner
+            .persist_snapshot(snap)
+            .await
+            .map_err(|never| match never {})
     }
 }
 
@@ -407,6 +517,25 @@ where
             "status predicate timed out: {status:?}"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_status_error<S>(node: &Node<S>, deadline: Duration) -> ProposeError
+where
+    S: StateMachine,
+{
+    let start = tokio::time::Instant::now();
+    loop {
+        match node.status().await {
+            Ok(_) => {
+                assert!(
+                    start.elapsed() < deadline,
+                    "status never failed within {deadline:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(err) => return err,
+        }
     }
 }
 
@@ -752,7 +881,6 @@ async fn snapshot_hints_can_be_disabled_via_config() {
     })
     .await;
     assert_eq!(node.propose(CountCmd::Inc(5)).await.unwrap(), 5);
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(snapshot_view.lock().unwrap().snapshot.is_none());
     assert_eq!(snapshots_taken.load(Ordering::Relaxed), 0);
@@ -953,7 +1081,11 @@ async fn post_shutdown_api_calls_return_shutdown_errors() {
     let (node, _handle) = start_three_node_leader(16).await;
     let clone = node.clone();
     node.shutdown().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let status_err = wait_for_status_error(&clone, Duration::from_secs(1)).await;
+    assert!(matches!(
+        status_err,
+        ProposeError::Shutdown | ProposeError::DriverDead
+    ));
 
     let err = clone.propose(CountCmd::Inc(1)).await.unwrap_err();
     assert!(
@@ -985,6 +1117,102 @@ async fn post_shutdown_api_calls_return_shutdown_errors() {
     assert!(
         matches!(err, ProposeError::Shutdown | ProposeError::DriverDead),
         "got {err:?}",
+    );
+}
+
+#[tokio::test]
+async fn node_start_surfaces_recover_failure_from_storage() {
+    let (transport, _handle) = TestTransport::new();
+    let err = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        FailingStorage::<Vec<u8>>::new([FailingStorageOp::Recover]),
+        transport,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        NodeStartError::Storage(TestStorageError(reason)) if reason == "recover failed"
+    ));
+}
+
+#[tokio::test]
+async fn append_log_failure_fails_proposal_with_fatal() {
+    let (transport, _handle) = TestTransport::new();
+    let storage = FailingStorage::<Vec<u8>>::new([]);
+    let node = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        storage.clone(),
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader" && status.commit_index >= LogIndex::new(1)
+    })
+    .await;
+
+    storage.arm_failure(FailingStorageOp::AppendLog);
+    let err = node.propose(CountCmd::Inc(1)).await.unwrap_err();
+    assert!(
+        matches!(err, ProposeError::Fatal { reason } if reason == "append_log failed"),
+        "got {err:?}",
+    );
+}
+
+#[tokio::test]
+async fn persist_hard_state_failure_shuts_down_the_runtime() {
+    let (transport, _handle) = TestTransport::new();
+    let node = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        FailingStorage::<Vec<u8>>::new([FailingStorageOp::PersistHardState]),
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let err = wait_for_status_error(&node, Duration::from_secs(1)).await;
+    assert!(matches!(
+        err,
+        ProposeError::Shutdown | ProposeError::DriverDead
+    ));
+}
+
+#[tokio::test]
+async fn persist_snapshot_failure_kills_the_node_after_snapshot_hint() {
+    let (transport, _handle) = TestTransport::new();
+    let snapshots_taken = Arc::new(AtomicUsize::new(0));
+    let mut config = fast_single_node_config();
+    config.snapshot_hint_threshold_entries = 2;
+
+    let node = Node::start(
+        config,
+        SnapshottingCounter::new(Arc::clone(&snapshots_taken)),
+        FailingStorage::<Vec<u8>>::new([FailingStorageOp::PersistSnapshot]),
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader" && status.commit_index >= LogIndex::new(1)
+    })
+    .await;
+    assert_eq!(node.propose(CountCmd::Inc(5)).await.unwrap(), 5);
+
+    let err = wait_for_status_error(&node, Duration::from_secs(1)).await;
+    assert!(matches!(
+        err,
+        ProposeError::Shutdown | ProposeError::DriverDead
+    ));
+    assert!(
+        snapshots_taken.load(Ordering::Relaxed) >= 1,
+        "snapshot path never ran before the node died",
     );
 }
 
