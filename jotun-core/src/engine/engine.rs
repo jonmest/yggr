@@ -280,6 +280,14 @@ impl EngineConfig {
         self.max_log_entries = max;
         self
     }
+
+    /// Builder-style override for `lease_duration_ticks`. `0` disables
+    /// the leader-lease fast path.
+    #[must_use]
+    pub fn with_lease_duration_ticks(mut self, ticks: u64) -> Self {
+        self.lease_duration_ticks = ticks;
+        self
+    }
 }
 
 impl<C: Clone> Engine<C> {

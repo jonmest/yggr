@@ -179,6 +179,17 @@ pub struct Config {
     /// stays in its current term, so flapping nodes don't force the
     /// rest of the cluster to step down on every reconnect.
     pub pre_vote: bool,
+    /// §9 leader lease. When the leader has received a majority AE
+    /// ack within the last `lease_duration_ticks`, linearizable reads
+    /// skip the fresh-heartbeat round-trip and return immediately.
+    ///
+    /// Safety constraint: must be strictly less than
+    /// `election_timeout_min_ticks - heartbeat_interval_ticks`.
+    /// Otherwise a peer whose election timer expired could elect a
+    /// new leader inside our still-active lease window. `Config::validate`
+    /// enforces this. `0` disables the lease (every linearizable read
+    /// uses the classic §8 `ReadIndex` path). Default: `0`.
+    pub lease_duration_ticks: u64,
 }
 
 /// Invalid [`Config`] settings rejected by [`Config::validate`] and
@@ -201,6 +212,15 @@ pub enum ConfigError {
     PeersContainSelf { node_id: NodeId },
     /// Snapshot chunks must have a positive size.
     InvalidSnapshotChunkSize { snapshot_chunk_size_bytes: usize },
+    /// `lease_duration_ticks` must be strictly less than
+    /// `election_timeout_min_ticks - heartbeat_interval_ticks`, so a
+    /// peer can't elect a new leader inside our still-active lease
+    /// window.
+    LeaseDurationTooLarge {
+        lease_duration_ticks: u64,
+        election_timeout_min_ticks: u64,
+        heartbeat_interval_ticks: u64,
+    },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -228,6 +248,16 @@ impl std::fmt::Display for ConfigError {
             } => write!(
                 f,
                 "snapshot chunk size must be greater than zero (got {snapshot_chunk_size_bytes})"
+            ),
+            Self::LeaseDurationTooLarge {
+                lease_duration_ticks,
+                election_timeout_min_ticks,
+                heartbeat_interval_ticks,
+            } => write!(
+                f,
+                "lease_duration_ticks {lease_duration_ticks} must be strictly less than \
+                 election_timeout_min_ticks {election_timeout_min_ticks} - \
+                 heartbeat_interval_ticks {heartbeat_interval_ticks}"
             ),
         }
     }
@@ -270,6 +300,7 @@ impl Config {
             max_log_entries: 0,
             snapshot_chunk_size_bytes: 64 * 1024,
             pre_vote: true,
+            lease_duration_ticks: 0,
         }
     }
 
@@ -296,6 +327,21 @@ impl Config {
             return Err(ConfigError::InvalidSnapshotChunkSize {
                 snapshot_chunk_size_bytes: self.snapshot_chunk_size_bytes,
             });
+        }
+        // §9 lease safety: our lease must expire before any peer's
+        // election timer could fire, giving one heartbeat interval of
+        // clock-skew slack.
+        if self.lease_duration_ticks > 0 {
+            let safe_max = self
+                .election_timeout_min_ticks
+                .saturating_sub(self.heartbeat_interval_ticks);
+            if self.lease_duration_ticks >= safe_max {
+                return Err(ConfigError::LeaseDurationTooLarge {
+                    lease_duration_ticks: self.lease_duration_ticks,
+                    election_timeout_min_ticks: self.election_timeout_min_ticks,
+                    heartbeat_interval_ticks: self.heartbeat_interval_ticks,
+                });
+            }
         }
         Ok(())
     }
@@ -537,7 +583,8 @@ impl<S: StateMachine> Node<S> {
             config.snapshot_hint_threshold_entries,
         )
         .with_pre_vote(config.pre_vote)
-        .with_max_log_entries(config.max_log_entries);
+        .with_max_log_entries(config.max_log_entries)
+        .with_lease_duration_ticks(config.lease_duration_ticks);
         let engine: Engine<Vec<u8>> = Engine::with_config(
             config.node_id,
             initial_peers.iter().copied(),

@@ -504,6 +504,35 @@ fn config_validate_rejects_zero_snapshot_chunk_size() {
     ));
 }
 
+#[test]
+fn config_validate_rejects_lease_that_overruns_election_slack() {
+    // election_timeout_min=10, heartbeat=3 → safe max lease is 7.
+    // lease=7 is exactly the boundary (>= → rejected). lease=6 passes.
+    let mut config = Config::new(nid(1), std::iter::empty::<NodeId>());
+    config.election_timeout_min_ticks = 10;
+    config.election_timeout_max_ticks = 20;
+    config.heartbeat_interval_ticks = 3;
+
+    config.lease_duration_ticks = 7;
+    let err = config.validate().unwrap_err();
+    assert!(matches!(
+        err,
+        ConfigError::LeaseDurationTooLarge {
+            lease_duration_ticks: 7,
+            election_timeout_min_ticks: 10,
+            heartbeat_interval_ticks: 3,
+        },
+    ));
+
+    config.lease_duration_ticks = 6;
+    config.validate().expect("lease < election_min - heartbeat is fine");
+
+    config.lease_duration_ticks = 0;
+    config
+        .validate()
+        .expect("lease=0 disables the lease and bypasses the check");
+}
+
 async fn wait_for_status<S, F>(node: &Node<S>, deadline: Duration, mut predicate: F) -> NodeStatus
 where
     S: StateMachine,
