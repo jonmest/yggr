@@ -14,7 +14,7 @@ tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
 jotun-core = { path = "../jotun-core" }
 jotun = { path = "../jotun" }
-prost = "0.13"
+prost = "0.14"
 
 # Prevent this from interfering with workspace builds.
 [workspace]
