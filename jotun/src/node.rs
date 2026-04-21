@@ -572,6 +572,7 @@ impl<S: StateMachine> Node<S> {
             storage,
             transport,
             inputs: inputs_rx,
+            inputs_tx: inputs_tx.clone(),
             pending_proposals: HashMap::new(),
             pending_config_changes: HashMap::new(),
             max_pending_proposals,
@@ -582,6 +583,7 @@ impl<S: StateMachine> Node<S> {
             max_batch_delay_ticks: config.max_batch_delay_ticks,
             max_batch_entries: config.max_batch_entries,
             last_applied: LogIndex::ZERO,
+            snapshot_in_flight: false,
         };
         let driver: JoinHandle<()> = tokio::spawn(driver_loop(driver_state, recovered));
 
@@ -835,6 +837,11 @@ struct Driver<S: StateMachine, St, Tr> {
     storage: St,
     transport: Tr,
     inputs: mpsc::Receiver<DriverInput<S>>,
+    /// Cloneable sender end of the driver's own input channel. Used
+    /// by background helper tasks (currently just the snapshot
+    /// forwarder) to post results back into the driver's main loop
+    /// without requiring a direct `&mut Driver`.
+    inputs_tx: mpsc::Sender<DriverInput<S>>,
     /// Index in the log → user oneshot to fire when the entry applies.
     pending_proposals: HashMap<LogIndex, oneshot::Sender<Result<S::Response, ProposeError>>>,
     /// Index in the log → user oneshot to fire when a `ConfigChange`
@@ -863,6 +870,13 @@ struct Driver<S: StateMachine, St, Tr> {
     /// expose it publicly, so we track it from the Apply actions we
     /// dispatch.
     last_applied: LogIndex,
+    /// `true` while a snapshot request is sitting in the apply task
+    /// or a forwarder task is waiting on its reply. A second
+    /// `Action::SnapshotHint` that arrives in that window is dropped
+    /// — the engine will re-issue one the next time the threshold is
+    /// crossed, and serialising concurrent snapshots on the same
+    /// state machine would double the work for nothing.
+    snapshot_in_flight: bool,
 }
 
 struct PendingRead<S: StateMachine> {
@@ -961,6 +975,16 @@ enum DriverInput<S: StateMachine> {
     Shutdown {
         reply: oneshot::Sender<()>,
     },
+    /// Delivered by the snapshot-forwarder task when the apply task
+    /// finishes serialising state. Carries the bytes into the driver
+    /// so it can feed them to the engine via `Event::SnapshotTaken`.
+    /// `bytes == None` means the apply task was torn down before it
+    /// could reply; the driver just clears the in-flight flag and
+    /// lets the engine re-hint later.
+    SnapshotReady {
+        last_included_index: LogIndex,
+        bytes: Option<Vec<u8>>,
+    },
 }
 
 async fn driver_loop<S, St, Tr>(mut d: Driver<S, St, Tr>, recovered: RecoveredState<Vec<u8>>)
@@ -998,6 +1022,9 @@ where
                     DriverInput::Metrics { reply } => {
                         let _ = reply.send(d.engine.metrics());
                         Ok(())
+                    }
+                    DriverInput::SnapshotReady { last_included_index, bytes } => {
+                        handle_snapshot_ready(&mut d, last_included_index, bytes).await
                     }
                     DriverInput::Shutdown { reply } => {
                         debug!(target = "jotun::node", "shutdown requested");
@@ -1295,6 +1322,47 @@ where
     }
 }
 
+/// Feed the bytes produced by a background `StateMachine::snapshot`
+/// call back into the engine as `Event::SnapshotTaken` and dispatch
+/// any resulting actions (typically a `PersistSnapshot`). Clears the
+/// in-flight guard first so a fatal dispatch failure doesn't wedge
+/// future snapshot hints, and so a next-threshold hint arriving
+/// during follow-up dispatch is free to schedule the next snapshot.
+///
+/// `bytes == None` means the forwarder saw the apply task drop the
+/// reply oneshot (task teardown or a panic inside `snapshot`). The
+/// engine isn't told anything and will re-hint when the threshold is
+/// crossed next — safer than pushing an empty snapshot, which would
+/// advance the engine's snapshot floor without real state behind it.
+/// Empty `Some(vec)` — i.e. the user's `snapshot()` returned `Vec::new()`
+/// — is treated the same way as in the old blocking path: it's the
+/// documented "no snapshot this time" signal and we skip the engine
+/// step, just clearing the guard.
+async fn handle_snapshot_ready<S, St, Tr>(
+    d: &mut Driver<S, St, Tr>,
+    last_included_index: LogIndex,
+    bytes: Option<Vec<u8>>,
+) -> Result<(), Fatal>
+where
+    S: StateMachine,
+    St: Storage<Vec<u8>>,
+    Tr: Transport<Vec<u8>>,
+{
+    d.snapshot_in_flight = false;
+    let Some(bytes) = bytes else {
+        warn!(target = "jotun::node", "snapshot forwarder saw apply task teardown");
+        return Ok(());
+    };
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let actions = d.engine.step(Event::SnapshotTaken {
+        last_included_index,
+        bytes,
+    });
+    dispatch_actions(d, actions).await
+}
+
 async fn handle_read<S, St, Tr>(
     d: &mut Driver<S, St, Tr>,
     reader: Box<dyn FnOnce(&S) + Send>,
@@ -1451,6 +1519,20 @@ where
             Action::SnapshotHint {
                 last_included_index,
             } => {
+                // Fire the snapshot request off to the apply task and
+                // a forwarder task, then keep going. The forwarder
+                // posts a `SnapshotReady` input when the (potentially
+                // very slow) `StateMachine::snapshot` call returns;
+                // the driver stays responsive to ticks, RPCs, and
+                // user calls in the meantime.
+                //
+                // If a hint arrives while a previous snapshot is
+                // still in flight we drop it: the engine re-issues
+                // hints each time the applied-entries threshold is
+                // crossed anew.
+                if d.snapshot_in_flight {
+                    continue;
+                }
                 let (reply_tx, reply_rx) = oneshot::channel();
                 if d.apply_tx
                     .send(ApplyRequest::TakeSnapshot { reply: reply_tx })
@@ -1461,21 +1543,17 @@ where
                         reason: "apply task died",
                     });
                 }
-                let Ok(bytes) = reply_rx.await else {
-                    return Err(Fatal {
-                        reason: "apply task died",
-                    });
-                };
-                if bytes.is_empty() {
-                    continue;
-                }
-                let follow_up = d.engine.step(Event::SnapshotTaken {
-                    last_included_index,
-                    bytes,
+                d.snapshot_in_flight = true;
+                let inputs_tx = d.inputs_tx.clone();
+                tokio::spawn(async move {
+                    let bytes = reply_rx.await.ok();
+                    let _ = inputs_tx
+                        .send(DriverInput::SnapshotReady {
+                            last_included_index,
+                            bytes,
+                        })
+                        .await;
                 });
-                for action in follow_up.into_iter().rev() {
-                    pending.push_front(action);
-                }
             }
             Action::Redirect { .. } => {
                 // Already handled at the propose call site; engine
