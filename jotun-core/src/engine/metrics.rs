@@ -1,6 +1,6 @@
 //! Pull-model observability for the engine. Counters tick as the
 //! engine processes events; gauges reflect current state. Snapshot
-//! via [`Engine::metrics`].
+//! via [`crate::engine::engine::Engine::metrics`].
 //!
 //! Every counter is a `u64` that only moves forward within a single
 //! `Engine` instance. Wraparound is not modelled — a Raft node that
@@ -11,7 +11,7 @@
 use crate::types::{index::LogIndex, term::Term};
 
 /// A snapshot of the engine's metric counters and gauges. Produced by
-/// [`crate::engine::Engine::metrics`].
+/// [`crate::engine::engine::Engine::metrics`].
 ///
 /// Counters only increase over the lifetime of the engine; gauges
 /// track the current value of the underlying state.

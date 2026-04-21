@@ -7,9 +7,18 @@
 //! action dispatcher. Incoming snapshots are installed and restored
 //! automatically. By default the runtime also reacts to snapshot hints
 //! from the engine by calling [`StateMachine::snapshot`] and feeding
-//! the resulting bytes back into Raft; set
-//! [`Config::snapshot_hint_threshold_entries`] to `0` if you want to
-//! disable that host-initiated compaction path.
+//! the resulting bytes back into Raft; the serializer runs on a
+//! separate task so a slow [`StateMachine::snapshot`] does not stall
+//! ticks, heartbeats, or [`Node::status`]. `snapshot` is fallible
+//! ([`SnapshotError`]); returning `Err` just skips this hint and the
+//! engine retries on the next one. Set
+//! [`Config::snapshot_hint_threshold_entries`] to `0` (and
+//! [`Config::max_log_entries`]) if you want to disable host-initiated
+//! compaction entirely.
+//!
+//! Observability is pull-model: [`Node::metrics`] returns a snapshot
+//! of counters and gauges covering elections, replication, commits,
+//! applies, reads, and snapshots.
 //!
 //! For users who want different transport, storage, or concurrency,
 //! [`Storage`] and [`Transport`] are traits — the defaults are

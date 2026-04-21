@@ -44,6 +44,19 @@ With batching on, N concurrent `propose` calls can commit in a single broadcast 
 | Field | Default | Note |
 |---|---|---|
 | `snapshot_hint_threshold_entries` | 1024 | The engine emits `Action::SnapshotHint` every time this many entries have been applied past the current floor. Set to `0` to disable. |
+| `max_log_entries` | 0 (off) | Live-log guardrail. When the number of log entries above the current snapshot floor exceeds this, the engine emits a `SnapshotHint` regardless of the applied-entries band. Protects against runaway log growth when apply is lagging. |
 | `snapshot_chunk_size_bytes` | 64 KiB | Maximum bytes per `InstallSnapshot` chunk. |
+
+## Elections
+
+| Field | Default | Note |
+|---|---|---|
+| `pre_vote` | `true` | §9.6 pre-vote. A disrupted follower probes peers before bumping its term, so flapping nodes can't force the rest of the cluster to step down on every reconnect. |
+
+## Reads
+
+| Field | Default | Note |
+|---|---|---|
+| `lease_duration_ticks` | 0 (off) | §9 leader-lease. When the leader has received a majority AE ack within this many ticks, linearizable reads skip the ReadIndex round-trip and return immediately. Must be strictly less than `election_timeout_min_ticks - heartbeat_interval_ticks`, otherwise `Config::validate` rejects it. |
 
 See [rustdoc for `Config`](../api/jotun/struct.Config.html) for the full type.

@@ -31,12 +31,15 @@ The split exists so the engine is usable without the runtime, and so the simulat
 ## What's implemented
 
 - Leader election, log replication, single-server membership changes (§4.3)
-- Linearizable reads via ReadIndex (§8)
+- §9.6 Pre-vote, on by default — flapping nodes can't force the rest of the cluster to step down
+- Linearizable reads via ReadIndex (§8), with an opt-in §9 leader-lease fast path that skips the heartbeat round when the leader has a fresh majority ack
 - Leadership transfer via `TimeoutNow`
-- Snapshotting, including chunked `InstallSnapshot` and auto-compaction hints
-- Segmented on-disk log with atomic file writes
+- Snapshotting: chunked `InstallSnapshot`, applied-entries and live-log guardrails (`max_log_entries`), and non-blocking `snapshot()` — a slow serializer cannot stall the driver
+- Fallible `StateMachine::snapshot` so transient disk-space errors retry cleanly
+- Segmented on-disk log with atomic file writes and crash-mid-rename cleanup
 - State machine apply on its own task; slow `apply()` does not stall heartbeats
 - Opt-in proposal batching on the leader
+- Pull-model metrics via `Node::metrics()` — counters for elections, replication, reads, and snapshots plus the usual gauges
 - Structured `tracing` spans and events with stable field names. OpenTelemetry wiring is a few lines in your `main`; see the [observability guide](https://jonmest.github.io/jotun/guide/runtime/observability.html).
 
 ## Quick start

@@ -12,6 +12,12 @@ let value = node.read_linearizable(|sm: &MyState| sm.value).await?;
 2. The leader triggers a heartbeat round. When a majority of peers ack, the leader knows it was still authoritative as of `read_index`.
 3. When `last_applied >= read_index` on the leader, the closure runs.
 
+## Leader-lease fast path (§9)
+
+With `Config::lease_duration_ticks > 0`, the leader may skip the heartbeat round. If it has received a majority AE ack within the last `lease_duration_ticks`, no other leader can have been elected during that window (§9 proof), so the current `commit_index` is still authoritative. `read_linearizable` returns as soon as `last_applied >= commit_index`.
+
+Safety constraint: `lease_duration_ticks < election_timeout_min_ticks - heartbeat_interval_ticks`. `Config::validate` rejects violations. Lease off (`0`, the default) always uses the classic protocol.
+
 ## Errors
 
 - `NotLeader { leader_hint }` — retry against `leader_hint`.

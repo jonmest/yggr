@@ -9,15 +9,25 @@ Snapshots (§7) let a node discard the prefix of its log by capturing the state 
 
 ## Auto-compaction hints
 
-The engine emits `Action::SnapshotHint { last_included_index }` every time the applied-entries count past the current floor crosses `Config::snapshot_hint_threshold_entries`. The default runtime reacts by calling `StateMachine::snapshot()` and feeding the bytes back via `Event::SnapshotTaken`. Set `snapshot_hint_threshold_entries = 0` to turn it off.
+The engine emits `Action::SnapshotHint { last_included_index }` in two cases:
+
+1. Applied-entries band — every time the applied-entries count past the current floor crosses `Config::snapshot_hint_threshold_entries`. Set to `0` to disable.
+2. Live-log guardrail — whenever entries above the floor exceed `Config::max_log_entries` (disk-space backstop for a stuck apply path). Set to `0` to disable.
+
+The default runtime reacts by calling `StateMachine::snapshot()` on its own task and feeding the bytes back via `Event::SnapshotTaken`. The driver does not block: `status()`, ticks, heartbeats, and inbound RPCs stay responsive even when `snapshot()` takes seconds to run. Overlapping hints during an in-flight snapshot are coalesced; the engine re-hints after the next threshold crossing.
+
+## Fallibility
+
+`StateMachine::snapshot` returns `Result<Vec<u8>, SnapshotError>`. Return `Err` for transient failures (ENOSPC, backpressure); the runtime logs and drops this attempt. The engine re-hints when the next threshold crossing fires, so the caller gets automatic retry without any bookkeeping.
 
 ## Compression
 
 The library treats snapshot bytes as opaque. Compress inside `StateMachine::snapshot` and decompress inside `restore`:
 
 ```rust
-fn snapshot(&self) -> Vec<u8> {
-    zstd::encode_all(&self.serialized[..], 3).unwrap()
+fn snapshot(&self) -> Result<Vec<u8>, SnapshotError> {
+    zstd::encode_all(&self.serialized[..], 3)
+        .map_err(|e| SnapshotError::new(e.to_string()))
 }
 fn restore(&mut self, bytes: Vec<u8>) {
     let decoded = zstd::decode_all(&bytes[..]).unwrap();
