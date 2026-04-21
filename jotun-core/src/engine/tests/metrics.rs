@@ -92,13 +92,7 @@ fn follower_with_pre_vote(id: u64) -> Engine<Vec<u8>> {
         .filter(|&p| p != id)
         .map(node)
         .collect();
-    Engine::with_config(
-        node(id),
-        peers,
-        Box::new(StaticEnv(10)),
-        1,
-        cfg,
-    )
+    Engine::with_config(node(id), peers, Box::new(StaticEnv(10)), 1, cfg)
 }
 
 #[test]

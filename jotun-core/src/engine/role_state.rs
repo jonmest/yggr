@@ -110,6 +110,12 @@ pub struct LeaderState {
     pub(crate) peer_acked_seq: BTreeMap<NodeId, u64>,
     /// Pending `ReadIndex` requests, in submission order.
     pub(crate) pending_reads: Vec<PendingRead>,
+    /// The `RaftState::current_tick` at which we most recently observed
+    /// a majority AE-ack bump `majority_acked_seq` to a new maximum.
+    /// `None` until the first majority ack at the current term; reset
+    /// on every `become_leader`. Feeds the §9 leader-lease fast path
+    /// in `on_propose_read`.
+    pub(crate) last_majority_ack_tick: Option<u64>,
 }
 
 /// A `ReadIndex` request awaiting confirmation that we're still leader.

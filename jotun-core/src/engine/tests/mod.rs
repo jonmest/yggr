@@ -6,6 +6,7 @@ mod config_change;
 mod fixtures;
 mod invariants;
 mod leadership_transfer;
+mod lease;
 mod membership;
 mod metrics;
 mod persistence;

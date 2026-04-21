@@ -97,6 +97,11 @@ pub(crate) struct RaftState<C> {
     /// snapshot floor advances (which shrinks the live log back below
     /// threshold).
     pub(crate) max_log_hint_armed: bool,
+    /// Monotonic tick counter, incremented exactly once per
+    /// [`Event::Tick`]. Drives the leader-lease expiry check — the
+    /// lease is derived from the *arrival* tick of the most recent
+    /// majority ack, not from wall-clock.
+    pub(crate) current_tick: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +185,8 @@ pub struct Engine<C> {
     /// §9.6 pre-vote enabled. When on, election-timer expiry enters
     /// `PreCandidate` instead of bumping the term directly.
     pre_vote: bool,
+    /// Leader-lease window (§9) in ticks. See [`EngineConfig::lease_duration_ticks`].
+    lease_duration_ticks: u64,
     /// Pull-model observability counters. Gauges are reconstructed
     /// from `state` on read; counters are updated in-place here.
     metrics: crate::engine::metrics::MetricsCounters,
@@ -219,6 +226,17 @@ pub struct EngineConfig {
     /// election timeout bumps the term immediately. Only do this for
     /// reproducibility of older test traces.
     pub pre_vote: bool,
+    /// Leader-lease window, in ticks (§9). When a leader has observed
+    /// majority AE-acks within the last `lease_duration_ticks`, it may
+    /// serve a linearizable read synchronously without the usual
+    /// `ReadIndex` heartbeat round-trip.
+    ///
+    /// Safety requires
+    /// `lease_duration_ticks < election_timeout_min - heartbeat_interval_ticks`
+    /// so no peer can time out and win an election inside our lease
+    /// window. `0` disables the lease entirely (every read goes
+    /// through `ReadIndex`).
+    pub lease_duration_ticks: u64,
 }
 
 impl Default for EngineConfig {
@@ -228,6 +246,7 @@ impl Default for EngineConfig {
             snapshot_hint_threshold_entries: 0,
             max_log_entries: 0,
             pre_vote: true,
+            lease_duration_ticks: 10,
         }
     }
 }
@@ -240,6 +259,7 @@ impl EngineConfig {
             snapshot_hint_threshold_entries,
             max_log_entries: 0,
             pre_vote: true,
+            lease_duration_ticks: 10,
         }
     }
 
@@ -310,6 +330,7 @@ impl<C: Clone> Engine<C> {
             snapshot_hint_threshold_entries: config.snapshot_hint_threshold_entries,
             max_log_entries: config.max_log_entries,
             pre_vote: config.pre_vote,
+            lease_duration_ticks: config.lease_duration_ticks,
             metrics: crate::engine::metrics::MetricsCounters::default(),
             state: RaftState {
                 current_term: Term::ZERO,
@@ -328,6 +349,7 @@ impl<C: Clone> Engine<C> {
                 pending_snapshot_install: None,
                 snapshot_hint_band: 0,
                 max_log_hint_armed: false,
+                current_tick: 0,
             },
         }
     }
@@ -445,11 +467,7 @@ impl<C: Clone> Engine<C> {
             RoleState::Candidate(_) => 2,
             RoleState::Leader(_) => 3,
         };
-        let last_index = self
-            .state
-            .log
-            .last_log_id()
-            .map_or(0, |id| id.index.get());
+        let last_index = self.state.log.last_log_id().map_or(0, |id| id.index.get());
         let snapshot_index = self.state.log.snapshot_last().index.get();
         let log_len = last_index.saturating_sub(snapshot_index);
         crate::engine::metrics::EngineMetrics {
@@ -675,6 +693,10 @@ impl<C: Clone> Engine<C> {
     /// the heartbeat interval (leaders).
     #[instrument(target = "jotun::engine", skip_all)]
     fn on_tick(&mut self) -> Vec<Action<C>> {
+        // Saturating increment: the monotonic counter only matters for
+        // relative lease comparisons, and u64 ticks at any realistic
+        // cadence is centuries of uptime.
+        self.state.current_tick = self.state.current_tick.saturating_add(1);
         match &self.state.role {
             RoleState::Follower(_) | RoleState::PreCandidate(_) | RoleState::Candidate(_) => {
                 self.state.election_elapsed += 1;
@@ -1543,8 +1565,9 @@ impl<C: Clone> Engine<C> {
 
         if request.leader_commit > self.state.commit_index {
             let new_commit = request.leader_commit.min(last_appended);
-            self.metrics.entries_committed +=
-                new_commit.get().saturating_sub(self.state.commit_index.get());
+            self.metrics.entries_committed += new_commit
+                .get()
+                .saturating_sub(self.state.commit_index.get());
             self.state.commit_index = new_commit;
         }
 
@@ -1611,19 +1634,37 @@ impl<C: Clone> Engine<C> {
                 if last_appended > leader_last {
                     return vec![];
                 }
-                let RoleState::Leader(leader) = &mut self.state.role else {
-                    return vec![];
-                };
-                leader.progress.record_success(peer, last_appended);
-                if last_appended >= snapshot_floor {
-                    leader.snapshot_transfers.remove(&peer);
+                {
+                    let RoleState::Leader(leader) = &mut self.state.role else {
+                        return vec![];
+                    };
+                    leader.progress.record_success(peer, last_appended);
+                    if last_appended >= snapshot_floor {
+                        leader.snapshot_transfers.remove(&peer);
+                    }
                 }
                 // ReadIndex: this ack implicitly confirms every seq
                 // we've stamped this peer with. Copy it across.
-                if let Some(stamp) = leader.peer_sent_seq.get(&peer).copied() {
-                    let cur = leader.peer_acked_seq.get(&peer).copied().unwrap_or(0);
-                    if stamp > cur {
-                        leader.peer_acked_seq.insert(peer, stamp);
+                let majority_before = self.majority_acked_seq();
+                {
+                    let RoleState::Leader(leader) = &mut self.state.role else {
+                        unreachable!("just matched");
+                    };
+                    if let Some(stamp) = leader.peer_sent_seq.get(&peer).copied() {
+                        let cur = leader.peer_acked_seq.get(&peer).copied().unwrap_or(0);
+                        if stamp > cur {
+                            leader.peer_acked_seq.insert(peer, stamp);
+                        }
+                    }
+                }
+                // §9 lease: if this ack advanced the majority-acked
+                // seq, stamp the arrival tick. Only *forward* moves
+                // count — a stale ack can't extend the lease.
+                let majority_after = self.majority_acked_seq();
+                if majority_after > majority_before {
+                    let now = self.state.current_tick;
+                    if let RoleState::Leader(leader) = &mut self.state.role {
+                        leader.last_majority_ack_tick = Some(now);
                     }
                 }
                 let mut out = self.try_advance_commit_as_leader();
@@ -2246,6 +2287,24 @@ impl<C: Clone> Engine<C> {
             }];
         }
 
+        // §9 leader-lease fast path: if a majority AE-ack arrived
+        // within the lease window AND the state machine has already
+        // caught up to the commit index, serve the read synchronously.
+        // The lease is derived from ack-arrival ticks only (never send
+        // time), and is reset on every become_leader, so it is only
+        // valid while still leader at the same term.
+        if self.lease_duration_ticks > 0
+            && self.state.last_applied >= self.state.commit_index
+            && let RoleState::Leader(leader) = &self.state.role
+            && let Some(ack_tick) = leader.last_majority_ack_tick
+        {
+            let elapsed = self.state.current_tick.saturating_sub(ack_tick);
+            if elapsed <= self.lease_duration_ticks {
+                self.metrics.reads_completed += 1;
+                return vec![Action::ReadReady { id }];
+            }
+        }
+
         self.metrics.read_index_started += 1;
         let read_index = self.state.commit_index;
         let RoleState::Leader(leader) = &mut self.state.role else {
@@ -2447,6 +2506,7 @@ impl<C: Clone> Engine<C> {
             peer_sent_seq: std::collections::BTreeMap::default(),
             peer_acked_seq: std::collections::BTreeMap::default(),
             pending_reads: Vec::new(),
+            last_majority_ack_tick: None,
         });
         telemetry::became_leader(self.id, self.state.current_term);
 

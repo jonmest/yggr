@@ -33,6 +33,11 @@ fn classic_config() -> crate::engine::engine::EngineConfig {
         snapshot_hint_threshold_entries: 0,
         max_log_entries: 0,
         pre_vote: false,
+        // Most engine tests were written before the §9 leader lease
+        // existed; they assert ReadIndex round-trip shape and other
+        // behaviours that the lease would short-circuit. Keep lease
+        // off by default here — `tests/lease.rs` opts in explicitly.
+        lease_duration_ticks: 0,
     }
 }
 

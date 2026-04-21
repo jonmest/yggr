@@ -201,6 +201,7 @@ fn snapshot_hint_fires_once_per_applied_threshold_band_and_rearms_after_snapshot
             snapshot_hint_threshold_entries: 2,
             max_log_entries: 0,
             pre_vote: false,
+            lease_duration_ticks: 0,
         },
     );
     seed_log(&mut engine, &[1, 1, 1, 1]);
@@ -243,6 +244,7 @@ fn max_log_entries_emits_snapshot_hint_when_exceeded() {
             snapshot_hint_threshold_entries: 0, // applied-band path off
             max_log_entries: 3,
             pre_vote: false,
+            lease_duration_ticks: 0,
         },
     );
     // Seed 4 entries and commit them all. Live log (4) > threshold (3).
@@ -266,6 +268,7 @@ fn max_log_entries_zero_disables_the_guardrail() {
             snapshot_hint_threshold_entries: 0,
             max_log_entries: 0,
             pre_vote: false,
+            lease_duration_ticks: 0,
         },
     );
     seed_log(&mut engine, &[1, 1, 1, 1, 1, 1, 1, 1]);
@@ -291,6 +294,7 @@ fn max_log_entries_fires_once_per_crossing_and_rearms_after_snapshot() {
             snapshot_hint_threshold_entries: 0,
             max_log_entries: 2,
             pre_vote: false,
+            lease_duration_ticks: 0,
         },
     );
     seed_log(&mut engine, &[1, 1, 1]);
@@ -350,6 +354,7 @@ fn leader_with_snapshot() -> Engine<Vec<u8>> {
         snapshot_hint_threshold_entries: 0,
         max_log_entries: 0,
         pre_vote: false,
+        lease_duration_ticks: 0,
     })
 }
 
@@ -447,6 +452,7 @@ fn leader_streams_snapshot_one_chunk_per_broadcast_and_resumes_on_ack() {
         snapshot_hint_threshold_entries: 0,
         max_log_entries: 0,
         pre_vote: false,
+        lease_duration_ticks: 0,
     });
     engine.state_mut().snapshot_bytes = Some(b"abcdefg".to_vec());
     if let RoleState::Leader(ls) = &mut engine.state_mut().role {
@@ -500,6 +506,7 @@ fn leader_restarts_snapshot_transfer_when_floor_moves() {
         snapshot_hint_threshold_entries: 0,
         max_log_entries: 0,
         pre_vote: false,
+        lease_duration_ticks: 0,
     });
     if let RoleState::Leader(ls) = &mut engine.state_mut().role {
         ls.progress.record_conflict(node(3), LogIndex::new(1));
