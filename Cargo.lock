@@ -202,47 +202,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "jotun"
-version = "0.1.0"
-dependencies = [
- "jotun-core",
- "proptest",
- "prost",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "jotun-core"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "prost",
- "prost-build",
- "tracing",
-]
-
-[[package]]
-name = "jotun-examples"
-version = "0.1.0"
-dependencies = [
- "jotun",
- "jotun-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "jotun-sim"
-version = "0.1.0"
-dependencies = [
- "jotun-core",
- "proptest",
- "rand 0.10.1",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -975,6 +934,47 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "yggr"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "prost",
+ "tokio",
+ "tracing",
+ "yggr-core",
+]
+
+[[package]]
+name = "yggr-core"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "prost",
+ "prost-build",
+ "tracing",
+]
+
+[[package]]
+name = "yggr-examples"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yggr",
+ "yggr-core",
+]
+
+[[package]]
+name = "yggr-sim"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rand 0.10.1",
+ "yggr-core",
 ]
 
 [[package]]

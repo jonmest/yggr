@@ -59,4 +59,4 @@ With batching on, N concurrent `propose` calls can commit in a single broadcast 
 |---|---|---|
 | `lease_duration_ticks` | 0 (off) | §9 leader-lease. When the leader has received a majority AE ack within this many ticks, linearizable reads skip the ReadIndex round-trip and return immediately. Must be strictly less than `election_timeout_min_ticks - heartbeat_interval_ticks`, otherwise `Config::validate` rejects it. |
 
-See [rustdoc for `Config`](../api/jotun/struct.Config.html) for the full type.
+See [rustdoc for `Config`](../api/yggr/struct.Config.html) for the full type.

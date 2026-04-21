@@ -1,11 +1,11 @@
 # Writing a custom host
 
-The default `jotun` runtime assumes tokio, TCP, and disk. If those don't fit — you already have an async runtime, you want to replicate over QUIC, or you need to persist into an existing storage engine — you can drive `jotun-core` yourself.
+The default `yggr` runtime assumes tokio, TCP, and disk. If those don't fit — you already have an async runtime, you want to replicate over QUIC, or you need to persist into an existing storage engine — you can drive `yggr-core` yourself.
 
 A minimal host loop:
 
 ```rust
-use jotun_core::{Engine, Event, Action};
+use yggr_core::{Engine, Event, Action};
 
 let mut engine: Engine<MyCmd> = Engine::new(my_id, peers, env, heartbeat_ticks);
 
@@ -45,4 +45,4 @@ loop {
 2. Feed `Tick` at a steady cadence. The engine's election and heartbeat timers are tick-based. The default runtime uses 50ms per tick.
 3. Hydrate the engine on restart. Read persisted hard state, snapshot (if any), and post-snapshot log, then call `Engine::recover_from(RecoveredHardState { .. })` before feeding any real events.
 
-`jotun/src/node.rs` and `jotun-sim/src/harness.rs` are two working reference hosts.
+`yggr/src/node.rs` and `yggr-sim/src/harness.rs` are two working reference hosts.

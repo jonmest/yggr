@@ -1,0 +1,29 @@
+[package]
+name = "yggr-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Pure Raft protocol engine — deterministic state machine, no I/O, no async. The core of the yggr Raft library."
+repository = "https://github.com/jonmest/yggr"
+readme = "../README.md"
+keywords = ["raft", "consensus", "distributed", "replication"]
+categories = ["algorithms", "network-programming"]
+include = [
+    "src/**/*.rs",
+    "src/transport/protobuf/raft.proto",
+    "build.rs",
+    "Cargo.toml",
+]
+
+[dependencies]
+prost = "0.14"
+tracing = "0.1"
+
+[build-dependencies]
+prost-build = "0.14"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

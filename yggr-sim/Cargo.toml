@@ -1,0 +1,16 @@
+[package]
+name = "yggr-sim"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license-file = "../LICENSE.md"
+
+[dependencies]
+yggr-core = { path = "../yggr-core", version = "0.1" }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

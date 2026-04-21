@@ -203,17 +203,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "jotun"
+name = "yggr"
 version = "0.1.0"
 dependencies = [
- "jotun-core",
+ "yggr-core",
  "prost",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "jotun-core"
+name = "yggr-core"
 version = "0.1.0"
 dependencies = [
  "prost",
@@ -222,12 +222,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "jotun-fuzz"
+name = "yggr-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "jotun",
- "jotun-core",
+ "yggr",
+ "yggr-core",
  "libfuzzer-sys",
  "prost",
  "tempfile",

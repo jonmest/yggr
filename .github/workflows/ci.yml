@@ -96,7 +96,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install protoc + mold linker
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
-      - run: cargo test -p jotun --test runtime_chaos chaos_seeds_preserve_safety
+      - run: cargo test -p yggr --test runtime_chaos chaos_seeds_preserve_safety
 
   coverage:
     name: coverage
@@ -154,7 +154,7 @@ jobs:
       - name: Install protoc + mold linker
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - name: Run diff-scoped mutant smoke
-        run: cargo mutants -p jotun-core -p jotun --in-diff "origin/${{ github.base_ref }}...HEAD" --baseline skip --timeout 120 --output target/mutants/smoke # zizmor: ignore[template-injection]
+        run: cargo mutants -p yggr-core -p yggr --in-diff "origin/${{ github.base_ref }}...HEAD" --baseline skip --timeout 120 --output target/mutants/smoke # zizmor: ignore[template-injection]
       - name: Upload cargo-mutants smoke report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -183,7 +183,7 @@ jobs:
       - name: Install protoc + mold linker
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - name: Run full cargo-mutants sweep
-        run: cargo mutants -p jotun-core -p jotun --timeout 300 --output target/mutants/full
+        run: cargo mutants -p yggr-core -p yggr --timeout 300 --output target/mutants/full
       - name: Upload cargo-mutants full report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -208,7 +208,7 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: "cargo test -p jotun-core engine::tests::invariants::"
+      - run: "cargo test -p yggr-core engine::tests::invariants::"
 
   deny:
     name: cargo-deny

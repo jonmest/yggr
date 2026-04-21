@@ -8,7 +8,7 @@
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
-use jotun::storage::{DiskStorage, Storage};
+use yggr::storage::{DiskStorage, Storage};
 
 #[derive(Debug, Arbitrary)]
 struct Layout {

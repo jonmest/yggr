@@ -69,11 +69,11 @@ jobs:
           <!DOCTYPE html>
           <html lang="en"><head>
             <meta charset="utf-8">
-            <title>jotun</title>
+            <title>yggr</title>
             <meta http-equiv="refresh" content="0; url=./guide/">
             <link rel="canonical" href="./guide/">
           </head><body>
-            <p>Redirecting to <a href="./guide/">the guide</a>. Rustdoc is at <a href="./api/jotun/">api/jotun</a>.</p>
+            <p>Redirecting to <a href="./guide/">the guide</a>. Rustdoc is at <a href="./api/yggr/">api/yggr</a>.</p>
           </body></html>
           HTML
 

@@ -1,13 +1,13 @@
 # Introduction
 
-jotun is a Raft implementation in Rust. It is split into four crates:
+yggr is a Raft implementation in Rust. It is split into four crates:
 
 | crate | what it is |
 |---|---|
-| `jotun-core` | The protocol. `Engine<C>` with one method, `step(Event<C>) -> Vec<Action<C>>`. No sockets, no disk, no async. |
-| `jotun-sim` | A deterministic cluster simulator. Drives crashes, partitions, drops, reorderings, and partial flushes against `jotun-core` and checks safety invariants after every step. |
-| `jotun` | The tokio runtime. `Node`, `DiskStorage`, `TcpTransport`. |
-| `jotun-examples` | A three-node replicated KV service. |
+| `yggr-core` | The protocol. `Engine<C>` with one method, `step(Event<C>) -> Vec<Action<C>>`. No sockets, no disk, no async. |
+| `yggr-sim` | A deterministic cluster simulator. Drives crashes, partitions, drops, reorderings, and partial flushes against `yggr-core` and checks safety invariants after every step. |
+| `yggr` | The tokio runtime. `Node`, `DiskStorage`, `TcpTransport`. |
+| `yggr-examples` | A three-node replicated KV service. |
 
 The split exists so the engine can be embedded in a non-tokio runtime (or driven by a custom transport or storage) without dragging in the runtime, and so the simulator can run the engine deterministically.
 
@@ -28,9 +28,9 @@ The split exists so the engine can be embedded in a non-tokio runtime (or driven
 
 ## Who this is for
 
-- You want a Raft-backed Rust service and would prefer to not write the engine, transport, and storage plumbing yourself. Use `jotun`.
-- You already have an async runtime, a transport, or a storage layer you want to reuse. Use `jotun-core` directly; see [Writing a custom host](./engine/custom-host.md).
-- You want to test your own changes to the engine against adversarial schedules. Use `jotun-sim` as a test library.
+- You want a Raft-backed Rust service and would prefer to not write the engine, transport, and storage plumbing yourself. Use `yggr`.
+- You already have an async runtime, a transport, or a storage layer you want to reuse. Use `yggr-core` directly; see [Writing a custom host](./engine/custom-host.md).
+- You want to test your own changes to the engine against adversarial schedules. Use `yggr-sim` as a test library.
 
 ## Status
 

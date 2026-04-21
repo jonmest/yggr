@@ -1,11 +1,11 @@
-# jotun
+# yggr
 
 A Raft library in Rust. Four crates: a pure protocol engine, a deterministic simulator, a tokio runtime, and an example KV service.
 
-[Guide](https://jonmest.github.io/jotun/guide/) &middot; [API docs](https://jonmest.github.io/jotun/api/jotun/)
+[Guide](https://jonmest.github.io/yggr/guide/) &middot; [API docs](https://jonmest.github.io/yggr/api/yggr/)
 
 ```rust
-use jotun::{Config, Node, DiskStorage, TcpTransport};
+use yggr::{Config, Node, DiskStorage, TcpTransport};
 
 let config    = Config::new(my_id, peer_ids);
 let storage   = DiskStorage::open(&data_dir).await?;
@@ -21,10 +21,10 @@ let value = node.read_linearizable(|sm: &MyStateMachine| sm.value).await?;
 
 ## Crates
 
-- `jotun-core` is the protocol. One type, `Engine<C>`, one method: `step(Event<C>) -> Vec<Action<C>>`. No sockets, no disk, no async.
-- `jotun-sim` is a deterministic cluster simulator. It drives drops, reorderings, partitions, crashes, and partial fsync against the engine and checks safety invariants after every step.
-- `jotun` is the tokio runtime. It provides `Node`, `DiskStorage`, `TcpTransport`, and a length-prefixed protobuf wire format.
-- `jotun-examples` has a three-node replicated KV service.
+- `yggr-core` is the protocol. One type, `Engine<C>`, one method: `step(Event<C>) -> Vec<Action<C>>`. No sockets, no disk, no async.
+- `yggr-sim` is a deterministic cluster simulator. It drives drops, reorderings, partitions, crashes, and partial fsync against the engine and checks safety invariants after every step.
+- `yggr` is the tokio runtime. It provides `Node`, `DiskStorage`, `TcpTransport`, and a length-prefixed protobuf wire format.
+- `yggr-examples` has a three-node replicated KV service.
 
 The split exists so the engine is usable without the runtime, and so the simulator can run the engine deterministically without tokio or real I/O.
 
@@ -40,7 +40,7 @@ The split exists so the engine is usable without the runtime, and so the simulat
 - State machine apply on its own task; slow `apply()` does not stall heartbeats
 - Opt-in proposal batching on the leader
 - Pull-model metrics via `Node::metrics()` — counters for elections, replication, reads, and snapshots plus the usual gauges
-- Structured `tracing` spans and events with stable field names. OpenTelemetry wiring is a few lines in your `main`; see the [observability guide](https://jonmest.github.io/jotun/guide/runtime/observability.html).
+- Structured `tracing` spans and events with stable field names. OpenTelemetry wiring is a few lines in your `main`; see the [observability guide](https://jonmest.github.io/yggr/guide/runtime/observability.html).
 
 ## Quick start
 
@@ -48,7 +48,7 @@ Requires Rust 1.85+ and `protoc`.
 
 ```bash
 # Three-node KV demo.
-./jotun-examples/run-three-node.sh
+./yggr-examples/run-three-node.sh
 
 # Workspace checks.
 just test

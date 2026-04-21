@@ -1,6 +1,6 @@
 # Events and actions
 
-See the [rustdoc for `Event`](../api/jotun_core/enum.Event.html) and [`Action`](../api/jotun_core/enum.Action.html) for the full definitions.
+See the [rustdoc for `Event`](../api/yggr_core/enum.Event.html) and [`Action`](../api/yggr_core/enum.Action.html) for the full definitions.
 
 ## Action ordering
 

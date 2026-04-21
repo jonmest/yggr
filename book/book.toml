@@ -1,6 +1,6 @@
 [book]
-title = "The jotun guide"
-authors = ["jotun contributors"]
+title = "The yggr guide"
+authors = ["yggr contributors"]
 description = "A Rust Raft library: pure engine, deterministic sim, tokio runtime."
 src = "src"
 language = "en"
@@ -8,7 +8,7 @@ language = "en"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "ayu"
-git-repository-url = "https://github.com/jonmest/jotun"
-edit-url-template = "https://github.com/jonmest/jotun/edit/main/book/{path}"
+git-repository-url = "https://github.com/jonmest/yggr"
+edit-url-template = "https://github.com/jonmest/yggr/edit/main/book/{path}"
 # Rustdoc is published at /api/ next to this book at /guide/; the
 # `site:` just-recipe builds both into target/site/.

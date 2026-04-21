@@ -21,7 +21,7 @@ let node = Node::start(config, state_machine, storage, transport).await?;
 | `status()` | Current role, term, commit index, known leader. |
 | `shutdown()` | Drain and stop every background task. |
 
-See [rustdoc for `Node`](../api/jotun/struct.Node.html) for full signatures.
+See [rustdoc for `Node`](../api/yggr/struct.Node.html) for full signatures.
 
 ## Error types
 

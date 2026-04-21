@@ -1,9 +1,9 @@
 # A three-node cluster
 
-The `jotun-examples` crate ships a replicated KV service. To see it running:
+The `yggr-examples` crate ships a replicated KV service. To see it running:
 
 ```bash
-./jotun-examples/run-three-node.sh
+./yggr-examples/run-three-node.sh
 ```
 
 That brings up three `kv` processes on localhost, has them elect a leader, and exposes a text protocol you can drive with `nc`.

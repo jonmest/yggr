@@ -1,0 +1,27 @@
+[package]
+name = "yggr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Batteries-included Raft node runtime built on yggr-core: tokio driver, TCP transport, segmented on-disk log."
+repository = "https://github.com/jonmest/yggr"
+readme = "../README.md"
+keywords = ["raft", "consensus", "distributed", "tokio", "database"]
+categories = ["asynchronous", "network-programming", "database-implementations"]
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+]
+
+[dependencies]
+yggr-core = { path = "../yggr-core", version = "0.1" }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "net", "io-util", "macros", "fs"] }
+prost = "0.14"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+proptest = "1"
+
+[lints]
+workspace = true

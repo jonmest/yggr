@@ -3,7 +3,7 @@
 Your `StateMachine` is the application-level thing Raft replicates. Three required methods, two optional ones for snapshots.
 
 ```rust
-use jotun::{DecodeError, StateMachine};
+use yggr::{DecodeError, StateMachine};
 
 #[derive(Debug, Default)]
 struct Counter { value: u64 }

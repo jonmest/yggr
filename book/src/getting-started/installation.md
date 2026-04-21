@@ -1,17 +1,17 @@
 # Installation
 
-Add `jotun` to your `Cargo.toml`:
+Add `yggr` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-jotun = "0.1"
+yggr = "0.1"
 ```
 
 Or, for the engine without the runtime:
 
 ```toml
 [dependencies]
-jotun-core = "0.1"
+yggr-core = "0.1"
 ```
 
 ## Requirements

@@ -33,7 +33,7 @@ Gauges:
 
 - `current_term`, `commit_index`, `last_applied`, `log_len`, `role_code` (0=follower, 1=precandidate, 2=candidate, 3=leader).
 
-`EngineMetrics` is `#[non_exhaustive]`; new fields are additive. See [rustdoc](../api/jotun_core/engine/metrics/struct.EngineMetrics.html) for the exact set.
+`EngineMetrics` is `#[non_exhaustive]`; new fields are additive. See [rustdoc](../api/yggr_core/engine/metrics/struct.EngineMetrics.html) for the exact set.
 
 ## Tracing
 
@@ -43,8 +43,8 @@ The engine and runtime emit structured `tracing` events and spans with stable ta
 
 | Target | What emits |
 |---|---|
-| `jotun::engine` | Role changes, term advances, vote decisions, AppendEntries accept/reject, commit advances. |
-| `jotun::node` | Driver-level events: apply failures, transport errors, shutdown. |
+| `yggr::engine` | Role changes, term advances, vote decisions, AppendEntries accept/reject, commit advances. |
+| `yggr::node` | Driver-level events: apply failures, transport errors, shutdown. |
 
 ### Fields
 
@@ -72,12 +72,12 @@ tracing_subscriber::registry()
     .init();
 ```
 
-`jotun::engine` spans and events flow to the collector.
+`yggr::engine` spans and events flow to the collector.
 
 ### Log filters
 
 Quick-start `RUST_LOG` values:
 
-- `jotun=debug` — everything jotun emits at debug or above
-- `jotun::engine=info` — just protocol decisions
-- `jotun::node=debug,jotun::engine=info` — runtime detail, protocol overview
+- `yggr=debug` — everything yggr emits at debug or above
+- `yggr::engine=info` — just protocol decisions
+- `yggr::node=debug,yggr::engine=info` — runtime detail, protocol overview

@@ -1,6 +1,6 @@
 # The sim harness
 
-`jotun-sim` drives `jotun-core` under adversarial schedules and checks safety after every step. Raft's subtle bugs live at the interleaving between events, and unit tests don't cover an N-node state space.
+`yggr-sim` drives `yggr-core` under adversarial schedules and checks safety after every step. Raft's subtle bugs live at the interleaving between events, and unit tests don't cover an N-node state space.
 
 ## What the sim can do
 
@@ -14,7 +14,7 @@
 
 ## Running it
 
-Sim tests live under `jotun-sim/src/tests/`:
+Sim tests live under `yggr-sim/src/tests/`:
 
 - `smoke.rs` — happy-path sanity.
 - `chaos.rs` — proptests with drops, reorder, partitions, crashes, partial fsync.
@@ -23,11 +23,11 @@ Sim tests live under `jotun-sim/src/tests/`:
 - `proptests.rs` — happy-policy proptests asserting liveness (leader elected, majority commits).
 
 ```bash
-cargo nextest run -p jotun-sim
+cargo nextest run -p yggr-sim
 ```
 
 ## Budgets
 
-The chaos proptests default to 128 cases × 1500 steps for 3- and 5-node clusters, 128 cases × 2000 steps for 7-node. Any seed the shrinker finds is persisted in `jotun-sim/proptest-regressions/` and replayed on every future run.
+The chaos proptests default to 128 cases × 1500 steps for 3- and 5-node clusters, 128 cases × 2000 steps for 7-node. Any seed the shrinker finds is persisted in `yggr-sim/proptest-regressions/` and replayed on every future run.
 
 See [Safety invariants](./invariants.md) for what's checked.

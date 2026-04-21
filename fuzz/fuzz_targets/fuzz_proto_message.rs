@@ -5,8 +5,8 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use jotun_core::transport::protobuf as proto;
-use jotun_core::Message;
+use yggr_core::transport::protobuf as proto;
+use yggr_core::Message;
 use prost::Message as _;
 
 fuzz_target!(|data: &[u8]| {

@@ -1,6 +1,6 @@
 # The pure engine
 
-`jotun-core` is the Raft protocol. One type, one method:
+`yggr-core` is the Raft protocol. One type, one method:
 
 ```rust
 pub struct Engine<C> { /* ... */ }
@@ -33,7 +33,7 @@ Every effect is an `Action`:
 
 ## No I/O
 
-The engine does not touch a socket, a file, or the clock. The host (either `jotun` or your own code) translates `Action`s into I/O.
+The engine does not touch a socket, a file, or the clock. The host (either `yggr` or your own code) translates `Action`s into I/O.
 
 ## No async
 
@@ -41,4 +41,4 @@ The engine does not touch a socket, a file, or the clock. The host (either `jotu
 
 ## Testable
 
-Because the engine has no I/O, it runs at memory speed under the deterministic chaos harness in `jotun-sim`. Many seeds, thousands of steps each, in a second.
+Because the engine has no I/O, it runs at memory speed under the deterministic chaos harness in `yggr-sim`. Many seeds, thousands of steps each, in a second.

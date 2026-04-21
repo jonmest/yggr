@@ -29,11 +29,11 @@ additional_cargo_test_args = ["--profile", "mutants"]
 # contain a slash.
 exclude_globs = [
     "**/target/**",
-    "jotun-core/src/transport/protobuf/**",
+    "yggr-core/src/transport/protobuf/**",
     # Observability: tracing-only, no test assertions on field output.
-    "jotun-core/src/engine/telemetry.rs",
+    "yggr-core/src/engine/telemetry.rs",
     # Example binary: not a library-contract surface.
-    "jotun-examples/**",
+    "yggr-examples/**",
     # Benchmarks / scratch dirs.
     "**/benches/**",
     # Proptest persisted regressions.

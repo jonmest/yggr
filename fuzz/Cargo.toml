@@ -1,5 +1,5 @@
 [package]
-name = "jotun-fuzz"
+name = "yggr-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -12,8 +12,8 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "macros"] }
-jotun-core = { path = "../jotun-core" }
-jotun = { path = "../jotun" }
+yggr-core = { path = "../yggr-core" }
+yggr = { path = "../yggr" }
 prost = "0.14"
 
 # Prevent this from interfering with workspace builds.

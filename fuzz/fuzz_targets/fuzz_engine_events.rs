@@ -10,11 +10,11 @@
 use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 
-use jotun_core::{
+use yggr_core::{
     engine::event::Event, Engine, Incoming, LogEntry, LogId, LogIndex, LogPayload, Message, NodeId,
     RandomizedEnv, RequestAppendEntries, RequestVote, Term, VoteResponse, VoteResult,
 };
-use jotun_core::records::append_entries::{AppendEntriesResponse, AppendEntriesResult};
+use yggr_core::records::append_entries::{AppendEntriesResponse, AppendEntriesResult};
 
 #[derive(Debug, Arbitrary)]
 enum ArbitraryEvent {
