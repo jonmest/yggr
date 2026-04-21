@@ -130,17 +130,25 @@ fn crash_and_recover_preserves_liveness() {
     );
 }
 
-/// Known-failing repro for a latent safety bug in the 3-node chaos
-/// path: this seed panics with `LeaderMissingCommitted { leader: 2,
-/// leader_term: 6, committed_term: 1, index: 1 }` — a node that
-/// never acked entry 1 still gets elected leader at a later term
-/// (§5.4.1 violation). The bug reproduces on `main` as well; it's
-/// not a regression of any recent change, just one proptest happens
-/// to find the schedule. `#[ignore]`d until fixed.
+/// Companion regression to `chaos_two_leaders_in_term_repro`: same
+/// underlying Persist→Send ordering bug, different manifestation
+/// (elected leader missing a committed entry, §5.4.1).
 #[test]
-#[ignore = "pre-existing latent safety bug in sim chaos path"]
 fn chaos_leader_missing_committed_repro() {
     let mut cluster: Cluster<u64> = Cluster::new(2_988_569_338_452_412_884, 3);
+    cluster.set_policy(Policy::chaos(Some(1)));
+    for _ in 0..1500 {
+        cluster.step();
+    }
+}
+
+/// Repro for a safety bug fixed in the sim's Persist→Send ordering:
+/// partial-flush mode was enqueueing outbound Sends before applying
+/// the batch's prerequisite Persists, so a peer could observe a vote
+/// the sender could still lose on crash. Keep as a regression test.
+#[test]
+fn chaos_two_leaders_in_term_repro() {
+    let mut cluster: Cluster<u64> = Cluster::new(12_657_176_500_010_487_909, 3);
     cluster.set_policy(Policy::chaos(Some(1)));
     for _ in 0..1500 {
         cluster.step();

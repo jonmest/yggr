@@ -608,16 +608,21 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
             );
         }
 
-        // Enqueue outbound sends.
-        for action in &actions {
-            if let Action::Send { to, message } = action {
-                self.network.enqueue(id, *to, message.clone());
-            }
-        }
-
-        // If the policy flushes immediately, apply every pending write
-        // right now. Otherwise the scheduler must pick a Flush event.
-        let skip_flush = if self.policy.partial_flush_probability > 0.0 {
+        // Raft Figure 2: "respond to RPCs only after updating stable
+        // storage." Every Send in this batch depends on the preceding
+        // Persists in the same batch (the engine emits them in that
+        // order). Enqueueing the Send before applying those Persists
+        // would let peers observe state the sender could still lose on
+        // crash — a real safety hole. So if this batch contains any
+        // Send, flush the full pending queue first; only skip the
+        // flush for pure persist/apply batches, which is where
+        // partial-flush modeling actually belongs.
+        let has_send = actions
+            .iter()
+            .any(|a| matches!(a, Action::Send { .. }));
+        let skip_flush = if has_send {
+            false
+        } else if self.policy.partial_flush_probability > 0.0 {
             let mut rng = self.rng.lock().expect("sim RNG mutex poisoned");
             rng.random::<f64>() < self.policy.partial_flush_probability
         } else {
@@ -629,6 +634,13 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
                 .get_mut(&id)
                 .expect("drive_engine only calls for known nodes");
             harness.flush(usize::MAX);
+        }
+
+        // Enqueue outbound sends.
+        for action in &actions {
+            if let Action::Send { to, message } = action {
+                self.network.enqueue(id, *to, message.clone());
+            }
         }
     }
 }
