@@ -7,7 +7,7 @@ license-file = "../LICENSE.md"
 
 [dependencies]
 jotun-core = { path = "../jotun-core", version = "0.1" }
-rand = { version = "0.9", default-features = false, features = ["std", "std_rng"] }
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng"] }
 
 [dev-dependencies]
 proptest = "1"
