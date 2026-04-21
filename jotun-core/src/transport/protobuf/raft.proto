@@ -123,6 +123,19 @@ message TimeoutNow {
   uint64 leader_id = 2;
 }
 
+// §9.6 pre-vote. Same shape as RequestVote, different intent: asking
+// whether peers WOULD vote, without actually incrementing any term.
+message RequestPreVote {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  LogId last_log_id = 3;
+}
+
+message PreVoteResponse {
+  uint64 term = 1;
+  bool granted = 2;
+}
+
 message Message {
   oneof kind {
     RequestVote vote_request = 1;
@@ -132,5 +145,7 @@ message Message {
     RequestInstallSnapshot install_snapshot_request = 5;
     InstallSnapshotResponse install_snapshot_response = 6;
     TimeoutNow timeout_now = 7;
+    RequestPreVote pre_vote_request = 8;
+    PreVoteResponse pre_vote_response = 9;
   }
 }

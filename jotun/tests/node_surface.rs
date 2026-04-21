@@ -443,6 +443,9 @@ fn fast_three_node_config(max_pending_proposals: usize) -> Config {
     config.heartbeat_interval_ticks = 1;
     config.tick_interval = Duration::from_millis(10);
     config.max_pending_proposals = max_pending_proposals;
+    // These tests drive election manually via a forged VoteResponse;
+    // skip the pre-vote round.
+    config.pre_vote = false;
     config
 }
 

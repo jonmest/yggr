@@ -167,6 +167,12 @@ pub struct Config {
     pub snapshot_hint_threshold_entries: u64,
     /// Maximum size of one outbound `InstallSnapshot` chunk in bytes.
     pub snapshot_chunk_size_bytes: usize,
+    /// Enable §9.6 pre-vote. With pre-vote on (default `true`), a
+    /// disrupted follower checks whether peers would vote for it
+    /// BEFORE bumping its term. A node that can't reach a majority
+    /// stays in its current term, so flapping nodes don't force the
+    /// rest of the cluster to step down on every reconnect.
+    pub pre_vote: bool,
 }
 
 /// Invalid [`Config`] settings rejected by [`Config::validate`] and
@@ -256,6 +262,7 @@ impl Config {
             max_batch_entries: 64,
             snapshot_hint_threshold_entries: 1024,
             snapshot_chunk_size_bytes: 64 * 1024,
+            pre_vote: true,
         }
     }
 
@@ -287,7 +294,7 @@ impl Config {
     }
 }
 
-/// The Raft role — Follower, Candidate, or Leader.
+/// The Raft role — `Follower`, `PreCandidate`, `Candidate`, or `Leader`.
 ///
 /// Exposed via [`Node::status`]. Deliberately a flat enum (no
 /// per-role payload) to keep the observability surface decoupled from
@@ -295,6 +302,9 @@ impl Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Follower,
+    /// §9.6 pre-vote phase. An election timer fired and we're asking
+    /// peers whether they'd vote for us before bumping our term.
+    PreCandidate,
     Candidate,
     Leader,
 }
@@ -303,6 +313,7 @@ impl std::fmt::Display for Role {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Follower => f.write_str("follower"),
+            Self::PreCandidate => f.write_str("pre-candidate"),
             Self::Candidate => f.write_str("candidate"),
             Self::Leader => f.write_str("leader"),
         }
@@ -514,15 +525,17 @@ impl<S: StateMachine> Node<S> {
             config.election_timeout_min_ticks,
             config.election_timeout_max_ticks,
         ));
+        let engine_cfg = EngineConfig::new(
+            config.snapshot_chunk_size_bytes,
+            config.snapshot_hint_threshold_entries,
+        )
+        .with_pre_vote(config.pre_vote);
         let engine: Engine<Vec<u8>> = Engine::with_config(
             config.node_id,
             initial_peers.iter().copied(),
             env,
             config.heartbeat_interval_ticks,
-            EngineConfig::new(
-                config.snapshot_chunk_size_bytes,
-                config.snapshot_hint_threshold_entries,
-            ),
+            engine_cfg,
         );
 
         let max_pending_proposals = config.max_pending_proposals;
@@ -1222,7 +1235,7 @@ where
             let _ = reply.send(Err(err));
             return Ok(());
         }
-        RoleState::Candidate(_) => {
+        RoleState::PreCandidate(_) | RoleState::Candidate(_) => {
             let _ = reply.send(Err(TransferLeadershipError::NoLeader));
             return Ok(());
         }
@@ -1482,6 +1495,7 @@ where
 {
     let (role, leader_hint) = match d.engine.role() {
         RoleState::Follower(f) => (Role::Follower, f.leader_id()),
+        RoleState::PreCandidate(_) => (Role::PreCandidate, None),
         RoleState::Candidate(_) => (Role::Candidate, None),
         RoleState::Leader(_) => (Role::Leader, None),
     };

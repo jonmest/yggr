@@ -102,7 +102,19 @@ impl<C: Clone> NodeHarness<C> {
         rng: SharedRng,
     ) -> Self {
         let env = Box::new(SimEnv::new(rng));
-        let engine = Engine::new(id, peers.iter().copied(), env, heartbeat_interval_ticks);
+        // Sim proptests predate pre-vote and encode classical
+        // §5.2/§5.4 election semantics. The pre-vote extension gets
+        // its own dedicated engine-level tests; construct the engine
+        // with pre_vote off so the sim's schedule alphabet stays
+        // minimal.
+        let cfg = jotun_core::EngineConfig::default().with_pre_vote(false);
+        let engine = Engine::with_config(
+            id,
+            peers.iter().copied(),
+            env,
+            heartbeat_interval_ticks,
+            cfg,
+        );
         let mut ever_persisted_terms = BTreeSet::new();
         ever_persisted_terms.insert(Term::ZERO);
         Self {
@@ -214,11 +226,13 @@ impl<C: Clone> NodeHarness<C> {
             return;
         }
         let env = Box::new(SimEnv::new(rng));
-        let mut engine = Engine::new(
+        let cfg = jotun_core::EngineConfig::default().with_pre_vote(false);
+        let mut engine = Engine::with_config(
             self.id,
             self.peers.iter().copied(),
             env,
             self.heartbeat_interval_ticks,
+            cfg,
         );
         hydrate_engine(&mut engine, &self.persisted);
         self.engine = Some(engine);
@@ -341,6 +355,11 @@ fn check_send_ordering<C>(
 ) -> Result<(), PersistOrderingError> {
     use jotun_core::Message as M;
 
+    // Pre-vote is explicitly non-durable (§9.6): neither the sender
+    // nor the responder updates hard state as a result of a pre-vote
+    // round-trip. The messages carry a *proposed* term which may
+    // never become the engine's real term. Exempt them from the
+    // persist-before-send check.
     let msg_term = match message {
         M::VoteRequest(r) => r.term,
         M::VoteResponse(r) => r.term,
@@ -349,6 +368,7 @@ fn check_send_ordering<C>(
         M::InstallSnapshotRequest(r) => r.term,
         M::InstallSnapshotResponse(r) => r.term,
         M::TimeoutNow(r) => r.term,
+        M::PreVoteRequest(_) | M::PreVoteResponse(_) => return Ok(()),
     };
 
     // The engine must have persisted this term (or a later one) before

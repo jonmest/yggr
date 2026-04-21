@@ -1,6 +1,7 @@
 use crate::records::{
     append_entries::{AppendEntriesResponse, RequestAppendEntries},
     install_snapshot::{InstallSnapshotResponse, RequestInstallSnapshot},
+    pre_vote::{PreVoteResponse, RequestPreVote},
     timeout_now::TimeoutNow,
     vote::{RequestVote, VoteResponse},
 };
@@ -37,4 +38,10 @@ pub enum Message<C> {
     InstallSnapshotResponse(InstallSnapshotResponse),
     /// Leadership-transfer request: start an election immediately.
     TimeoutNow(TimeoutNow),
+    /// Pre-vote probe (§9.6): would you vote for me at `term` if I
+    /// asked? Non-disruptive — receipt does not update the peer's
+    /// term or `voted_for`.
+    PreVoteRequest(RequestPreVote),
+    /// Reply to a pre-vote probe.
+    PreVoteResponse(PreVoteResponse),
 }

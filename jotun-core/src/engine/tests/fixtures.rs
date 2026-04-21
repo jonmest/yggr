@@ -23,6 +23,18 @@ pub(super) const DEFAULT_ELECTION_TIMEOUT: u64 = 10;
 /// per §5.2.
 pub(super) const DEFAULT_HEARTBEAT_INTERVAL: u64 = 1;
 
+/// Default [`EngineConfig`] for the classic tests — pre-vote OFF so
+/// an election timer expiry produces a real `Candidate`, not a
+/// `PreCandidate`. Tests that exercise pre-vote opt in explicitly
+/// through `follower_with_pre_vote` in `tests/pre_vote.rs`.
+fn classic_config() -> crate::engine::engine::EngineConfig {
+    crate::engine::engine::EngineConfig {
+        snapshot_chunk_size_bytes: 64 * 1024,
+        snapshot_hint_threshold_entries: 0,
+        pre_vote: false,
+    }
+}
+
 /// A fresh follower in a 3-node cluster (self + peers 2 and 3): term 0,
 /// empty log, no prior vote. Receive-side tests use this when they don't
 /// care about specific peer composition; just enough peers to satisfy the
@@ -33,22 +45,24 @@ pub(super) fn follower(id: u64) -> Engine<Vec<u8>> {
         .filter(|&p| p != id)
         .map(node)
         .collect();
-    Engine::new(
+    Engine::with_config(
         node(id),
         peers,
         Box::new(StaticEnv(DEFAULT_ELECTION_TIMEOUT)),
         DEFAULT_HEARTBEAT_INTERVAL,
+        classic_config(),
     )
 }
 
 /// A follower that uses a caller-supplied `Env`. For tests that need to
 /// script a specific sequence of election timeouts.
 pub(super) fn follower_with_env(id: u64, peers: &[u64], env: Box<dyn Env>) -> Engine<Vec<u8>> {
-    Engine::new(
+    Engine::with_config(
         node(id),
         peers.iter().map(|&p| node(p)),
         env,
         DEFAULT_HEARTBEAT_INTERVAL,
+        classic_config(),
     )
 }
 

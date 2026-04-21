@@ -34,6 +34,16 @@ pub(crate) fn became_follower(node_id: NodeId, term: Term) {
     );
 }
 
+pub(crate) fn became_pre_candidate(node_id: NodeId, proposed_term: Term) {
+    tracing::info!(
+        target: TARGET,
+        node_id = %node_id,
+        proposed_term = %proposed_term,
+        role = "pre-candidate",
+        "role changed",
+    );
+}
+
 pub(crate) fn became_candidate(node_id: NodeId, term: Term) {
     tracing::info!(
         target: TARGET,

@@ -199,6 +199,7 @@ fn snapshot_hint_fires_once_per_applied_threshold_band_and_rearms_after_snapshot
         EngineConfig {
             snapshot_chunk_size_bytes: 16,
             snapshot_hint_threshold_entries: 2,
+            pre_vote: false,
         },
     );
     seed_log(&mut engine, &[1, 1, 1, 1]);
@@ -245,7 +246,13 @@ fn leader_with_snapshot_config(config: EngineConfig) -> Engine<Vec<u8>> {
 }
 
 fn leader_with_snapshot() -> Engine<Vec<u8>> {
-    leader_with_snapshot_config(EngineConfig::default())
+    // Classical election semantics for this test family. Pre-vote is
+    // exercised separately in `tests/pre_vote.rs`.
+    leader_with_snapshot_config(EngineConfig {
+        snapshot_chunk_size_bytes: 64 * 1024,
+        snapshot_hint_threshold_entries: 0,
+        pre_vote: false,
+    })
 }
 
 #[test]
@@ -340,6 +347,7 @@ fn leader_streams_snapshot_one_chunk_per_broadcast_and_resumes_on_ack() {
     let mut engine = leader_with_snapshot_config(EngineConfig {
         snapshot_chunk_size_bytes: 3,
         snapshot_hint_threshold_entries: 0,
+        pre_vote: false,
     });
     engine.state_mut().snapshot_bytes = Some(b"abcdefg".to_vec());
     if let RoleState::Leader(ls) = &mut engine.state_mut().role {
@@ -391,6 +399,7 @@ fn leader_restarts_snapshot_transfer_when_floor_moves() {
     let mut engine = leader_with_snapshot_config(EngineConfig {
         snapshot_chunk_size_bytes: 3,
         snapshot_hint_threshold_entries: 0,
+        pre_vote: false,
     });
     if let RoleState::Leader(ls) = &mut engine.state_mut().role {
         ls.progress.record_conflict(node(3), LogIndex::new(1));

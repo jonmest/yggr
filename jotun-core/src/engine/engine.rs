@@ -11,6 +11,7 @@ use crate::records::install_snapshot::{InstallSnapshotResponse, RequestInstallSn
 use crate::records::log_entry::{ConfigChange, LogEntry, LogPayload};
 #[allow(clippy::enum_glob_use)] // match-heavy file; variants are used unqualified throughout
 use crate::records::message::Message::*;
+use crate::records::pre_vote::{PreVoteResponse, RequestPreVote};
 use crate::records::timeout_now::TimeoutNow;
 use crate::records::vote::{RequestVote, VoteResponse, VoteResult};
 use crate::types::log::LogId;
@@ -20,7 +21,8 @@ use crate::{
         event::Event,
         incoming::Incoming,
         role_state::{
-            CandidateState, FollowerState, LeaderState, PendingRead, RoleState, SnapshotTransfer,
+            CandidateState, FollowerState, LeaderState, PendingRead, PreCandidateState, RoleState,
+            SnapshotTransfer,
         },
     },
     types::{index::LogIndex, node::NodeId, term::Term},
@@ -167,6 +169,9 @@ pub struct Engine<C> {
     snapshot_chunk_size_bytes: usize,
     /// Applied-entry threshold for emitting `Action::SnapshotHint`.
     snapshot_hint_threshold_entries: u64,
+    /// §9.6 pre-vote enabled. When on, election-timer expiry enters
+    /// `PreCandidate` instead of bumping the term directly.
+    pre_vote: bool,
     /// All mutable per-node state. Includes the active peer set, which
     /// the §4.3 single-server membership rule mutates from log entries.
     state: RaftState<C>,
@@ -183,6 +188,15 @@ pub struct EngineConfig {
     /// past the current floor crosses this threshold. `0` disables the
     /// hint.
     pub snapshot_hint_threshold_entries: u64,
+    /// Enable the §9.6 pre-vote extension. When on, a follower whose
+    /// election timer fires first enters `RoleState::PreCandidate`
+    /// and asks peers whether they would vote for it. The term is
+    /// only bumped if a majority grant. Default: `true`.
+    ///
+    /// Turning pre-vote off reverts to the textbook §5.2 behaviour:
+    /// election timeout bumps the term immediately. Only do this for
+    /// reproducibility of older test traces.
+    pub pre_vote: bool,
 }
 
 impl Default for EngineConfig {
@@ -190,6 +204,7 @@ impl Default for EngineConfig {
         Self {
             snapshot_chunk_size_bytes: 64 * 1024,
             snapshot_hint_threshold_entries: 0,
+            pre_vote: true,
         }
     }
 }
@@ -200,7 +215,18 @@ impl EngineConfig {
         Self {
             snapshot_chunk_size_bytes,
             snapshot_hint_threshold_entries,
+            pre_vote: true,
         }
+    }
+
+    /// Builder-style override for `pre_vote`. Useful for callers
+    /// that start from `Default::default()` and want to change the
+    /// one knob without naming the other fields (`EngineConfig` is
+    /// `#[non_exhaustive]`).
+    #[must_use]
+    pub fn with_pre_vote(mut self, pre_vote: bool) -> Self {
+        self.pre_vote = pre_vote;
+        self
     }
 }
 
@@ -250,6 +276,7 @@ impl<C: Clone> Engine<C> {
             heartbeat_interval_ticks,
             snapshot_chunk_size_bytes: config.snapshot_chunk_size_bytes.max(1),
             snapshot_hint_threshold_entries: config.snapshot_hint_threshold_entries,
+            pre_vote: config.pre_vote,
             state: RaftState {
                 current_term: Term::ZERO,
                 voted_for: None,
@@ -543,7 +570,9 @@ impl<C: Clone> Engine<C> {
     #[instrument(target = "jotun::engine", skip_all)]
     fn on_tick(&mut self) -> Vec<Action<C>> {
         match &self.state.role {
-            RoleState::Follower(_) | RoleState::Candidate(_) => {
+            RoleState::Follower(_)
+            | RoleState::PreCandidate(_)
+            | RoleState::Candidate(_) => {
                 self.state.election_elapsed += 1;
                 if self.state.election_elapsed >= self.state.election_timeout_ticks {
                     return self.start_election();
@@ -609,6 +638,13 @@ impl<C: Clone> Engine<C> {
                 }
                 self.on_timeout_now(request)
             }
+            PreVoteRequest(request) => {
+                if request.candidate_id != incoming.from {
+                    return vec![];
+                }
+                self.on_pre_vote_request(request)
+            }
+            PreVoteResponse(response) => self.on_pre_vote_response(incoming.from, response),
         }
     }
 
@@ -654,7 +690,7 @@ impl<C: Clone> Engine<C> {
                     None => vec![],
                 };
             }
-            RoleState::Candidate(_) => return vec![],
+            RoleState::PreCandidate(_) | RoleState::Candidate(_) => return vec![],
         }
 
         if commands.is_empty() {
@@ -710,7 +746,7 @@ impl<C: Clone> Engine<C> {
                     None => vec![],
                 };
             }
-            RoleState::Candidate(_) => return vec![],
+            RoleState::PreCandidate(_) | RoleState::Candidate(_) => return vec![],
         }
 
         // §4.3 safety: at most one uncommitted ConfigChange in the log.
@@ -760,7 +796,7 @@ impl<C: Clone> Engine<C> {
                     None => vec![],
                 };
             }
-            RoleState::Candidate(_) => return vec![],
+            RoleState::PreCandidate(_) | RoleState::Candidate(_) => return vec![],
         }
 
         if !self.state.peers.contains(&target) {
@@ -1092,9 +1128,25 @@ impl<C: Clone> Engine<C> {
         }
     }
 
-    /// Begin a new election: bump term, vote for self, send `RequestVote` to
-    /// every peer. Single-node clusters self-elect immediately.
+    /// Begin a new election. With `pre_vote` enabled (the default)
+    /// this enters `RoleState::PreCandidate` and sends
+    /// `RequestPreVote` — the term is NOT bumped yet. Without
+    /// pre-vote, we proceed straight to `Candidate`, bump the term,
+    /// vote for self, and broadcast `RequestVote`.
+    ///
+    /// Single-node clusters self-elect immediately on either path:
+    /// the pre-vote majority check and the vote majority check both
+    /// pass with one grant.
     fn start_election(&mut self) -> Vec<Action<C>> {
+        if self.pre_vote {
+            return self.start_pre_election();
+        }
+        self.start_vote_election()
+    }
+
+    /// Classic §5.2 election start: bump term, vote for self,
+    /// broadcast `RequestVote`.
+    fn start_vote_election(&mut self) -> Vec<Action<C>> {
         self.become_candidate();
         // become_candidate bumped current_term and set voted_for to self.
         // Persist before any Send: a crashed-and-recovered candidate must
@@ -1119,6 +1171,146 @@ impl<C: Clone> Engine<C> {
         out
     }
 
+    /// §9.6 pre-election start. Enters `RoleState::PreCandidate`,
+    /// proposes `current_term + 1` as the candidate term, and
+    /// broadcasts `RequestPreVote`. Does NOT bump the engine's term
+    /// or vote — that only happens on promotion to `Candidate` once
+    /// a majority of peers grant.
+    fn start_pre_election(&mut self) -> Vec<Action<C>> {
+        self.become_pre_candidate();
+        self.reset_election_timer();
+
+        // Self-grant is always included in the tally; check for
+        // majority before sending anything. A single-node cluster
+        // has majority=1 and promotes immediately.
+        if self.has_pre_vote_majority() {
+            return self.promote_pre_candidate_to_candidate();
+        }
+
+        let proposed_term = match &self.state.role {
+            RoleState::PreCandidate(p) => p.proposed_term,
+            _ => unreachable!("just entered PreCandidate"),
+        };
+        let request = RequestPreVote {
+            term: proposed_term,
+            candidate_id: self.id(),
+            last_log_id: self.state.log.last_log_id(),
+        };
+
+        self.state
+            .peers
+            .iter()
+            .map(|&peer| Action::Send {
+                to: peer,
+                message: PreVoteRequest(request),
+            })
+            .collect()
+    }
+
+    /// Transition to `PreCandidate` with `proposed_term = current + 1`.
+    /// Self-grants itself. Does NOT touch `current_term` or `voted_for`.
+    fn become_pre_candidate(&mut self) {
+        let proposed_term = self.state.current_term.next();
+        let mut grants = BTreeSet::new();
+        grants.insert(self.id());
+        self.state.role = RoleState::PreCandidate(PreCandidateState {
+            proposed_term,
+            grants,
+        });
+        telemetry::became_pre_candidate(self.id, proposed_term);
+    }
+
+    /// True iff we're a `PreCandidate` whose pre-vote tally has
+    /// reached cluster majority.
+    fn has_pre_vote_majority(&self) -> bool {
+        match self.role() {
+            RoleState::PreCandidate(p) => p.grants.len() >= self.cluster_majority(),
+            _ => false,
+        }
+    }
+
+    /// `PreCandidate` → `Candidate` via the classic §5.2 path. The
+    /// pre-vote succeeded, so we're now confident we can win the real
+    /// election.
+    fn promote_pre_candidate_to_candidate(&mut self) -> Vec<Action<C>> {
+        // Drop pre-candidate state; `start_vote_election` expects to
+        // transition from any non-Leader role into Candidate.
+        self.start_vote_election()
+    }
+
+    /// Handle `RequestPreVote`. The responder's rules (§9.6):
+    ///  - Grant iff the candidate's log is at least as up-to-date as
+    ///    ours (§5.4.1), AND we haven't heard from a live leader in
+    ///    the current election window.
+    ///  - Receipt of a pre-vote NEVER updates our term or `voted_for`.
+    ///    A stale-higher-term pre-vote is just metadata.
+    #[instrument(target = "jotun::engine", skip_all)]
+    fn on_pre_vote_request(&mut self, request: RequestPreVote) -> Vec<Action<C>> {
+        let log_ok = self.state.log.is_superseded_by(request.last_log_id);
+        // A leader MUST reject pre-votes — if we're the leader, a
+        // challenger should not be allowed to disrupt us.
+        let leader_recent = match &self.state.role {
+            RoleState::Leader(_) => true,
+            // A follower with a leader it heard from this term and
+            // whose election timer hasn't expired yet still considers
+            // the leader live.
+            RoleState::Follower(f) => {
+                f.leader_id.is_some()
+                    && self.state.election_elapsed < self.state.election_timeout_ticks
+            }
+            // A PreCandidate / Candidate is already trying to elect
+            // someone; reject pre-votes from other challengers.
+            RoleState::PreCandidate(_) | RoleState::Candidate(_) => false,
+        };
+        let granted = log_ok && !leader_recent && request.term > self.state.current_term;
+
+        let reply = PreVoteResponse {
+            term: self.state.current_term,
+            granted,
+        };
+        vec![Action::Send {
+            to: request.candidate_id,
+            message: PreVoteResponse(reply),
+        }]
+    }
+
+    /// Handle `PreVoteResponse`.
+    ///
+    /// Three cases:
+    ///  1. Responder is at a higher term than we are. Step down to
+    ///     `Follower` at that term (§5.1).
+    ///  2. We're not in `PreCandidate` state. The response is stale
+    ///     (e.g. we already promoted, or got demoted by an AE).
+    ///     Ignore.
+    ///  3. We're in `PreCandidate`. If `granted`, record the grant;
+    ///     on reaching cluster majority, promote to `Candidate`.
+    ///
+    /// The responder's `term` equal to ours is normal — pre-vote
+    /// doesn't advance terms, so in a freshly-started 3-node cluster
+    /// all pre-vote traffic happens at `term = 0`.
+    #[instrument(target = "jotun::engine", skip_all)]
+    fn on_pre_vote_response(
+        &mut self,
+        from: NodeId,
+        response: PreVoteResponse,
+    ) -> Vec<Action<C>> {
+        if response.term > self.state.current_term {
+            let mut out = self.become_follower(response.term);
+            out.push(self.persist_hard_state());
+            return out;
+        }
+        if !response.granted {
+            return vec![];
+        }
+        if let RoleState::PreCandidate(p) = &mut self.state.role {
+            p.grants.insert(from);
+            if p.grants.len() >= self.cluster_majority() {
+                return self.promote_pre_candidate_to_candidate();
+            }
+        }
+        vec![]
+    }
+
     // =========================================================================
     // Replication — AppendEntries in both directions (§5.3)
     // =========================================================================
@@ -1139,7 +1331,10 @@ impl<C: Clone> Engine<C> {
         let mut stepdown: Vec<Action<C>> = Vec::new();
         if request.term > self.state.current_term
             || (request.term == self.state.current_term
-                && matches!(self.state.role, RoleState::Candidate(_)))
+                && matches!(
+                    self.state.role,
+                    RoleState::Candidate(_) | RoleState::PreCandidate(_)
+                ))
         {
             stepdown = self.become_follower(request.term);
         }
@@ -1908,7 +2103,7 @@ impl<C: Clone> Engine<C> {
                 });
                 return vec![Action::ReadFailed { id, reason }];
             }
-            RoleState::Candidate(_) => {
+            RoleState::PreCandidate(_) | RoleState::Candidate(_) => {
                 return vec![Action::ReadFailed {
                     id,
                     reason: ReadFailure::NotReady,

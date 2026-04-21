@@ -8,6 +8,7 @@ mod invariants;
 mod leadership_transfer;
 mod membership;
 mod persistence;
+mod pre_vote;
 mod read_index;
 mod snapshot;
 mod tick;

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     engine::peer_progress::PeerProgress,
-    types::{index::LogIndex, log::LogId, node::NodeId},
+    types::{index::LogIndex, log::LogId, node::NodeId, term::Term},
 };
 
 /// Per-role state the follower carries while in the Follower role.
@@ -23,6 +23,36 @@ impl FollowerState {
     #[must_use]
     pub fn leader_id(&self) -> Option<NodeId> {
         self.leader_id
+    }
+}
+
+/// Per-role state the engine carries while probing peers for a
+/// pre-vote (§9.6). A pre-candidate behaves like a follower in every
+/// outward respect (does not grant `RequestVote`, does not broadcast) —
+/// it only collects `PreVoteResponse`s against the next-higher term.
+/// Once a majority grant, it transitions to a real `Candidate` and
+/// actually bumps the term.
+#[derive(Default, Clone, Debug)]
+pub struct PreCandidateState {
+    /// The term the pre-candidate would enter if promoted. Always
+    /// equal to the engine's `current_term + 1` at the moment the
+    /// pre-election began. Stored so stale responses (for an earlier
+    /// pre-election or a different term) can be discarded.
+    pub(crate) proposed_term: Term,
+    /// Node ids that have granted a pre-vote for `proposed_term`,
+    /// including self. Promotion happens at cluster majority.
+    pub(crate) grants: BTreeSet<NodeId>,
+}
+
+impl PreCandidateState {
+    /// The term we would enter on promotion.
+    pub fn proposed_term(&self) -> Term {
+        self.proposed_term
+    }
+    /// Grants received so far, including self.
+    #[must_use]
+    pub fn grants(&self) -> &BTreeSet<NodeId> {
+        &self.grants
     }
 }
 
@@ -115,14 +145,23 @@ pub(crate) struct SnapshotTransfer {
 ///
 /// Transitions are tightly constrained:
 ///  - Anyone → `Follower` on observing a higher term (§5.1).
-///  - `Follower`/`Candidate` → `Candidate` on election timeout (§5.2).
-///  - `Candidate` → `Follower` on receiving a current-term `AppendEntries`
-///    (a peer won the election) or a higher-term message.
+///  - `Follower` → `PreCandidate` on election timeout when pre-vote
+///    is enabled. Without pre-vote, `Follower` → `Candidate` directly.
+///  - `PreCandidate` → `Candidate` on collecting a majority of
+///    `PreVoteResponse { granted: true }`.
+///  - `PreCandidate` → `Follower` on accepting a current-term
+///    `AppendEntries`, observing a higher term, or (with the election
+///    timer re-firing) starting a fresh pre-election at the next
+///    proposed term.
+///  - `Candidate` → `Follower` on receiving a current-term
+///    `AppendEntries` (a peer won the election) or a higher-term
+///    message.
 ///  - `Candidate` → `Leader` on receiving votes from a majority.
 ///  - `Leader` → `Follower` only on observing a higher term.
 #[derive(Debug, Clone)]
 pub enum RoleState {
     Follower(FollowerState),
+    PreCandidate(PreCandidateState),
     Candidate(CandidateState),
     Leader(LeaderState),
 }

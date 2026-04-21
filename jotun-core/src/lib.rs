@@ -37,7 +37,9 @@ pub use engine::engine::{Engine, EngineConfig, RecoveredHardState, RecoveredSnap
 pub use engine::env::{Env, RandomizedEnv, StaticEnv};
 pub use engine::event::Event;
 pub use engine::incoming::Incoming;
-pub use engine::role_state::{CandidateState, FollowerState, LeaderState, RoleState};
+pub use engine::role_state::{
+    CandidateState, FollowerState, LeaderState, PreCandidateState, RoleState,
+};
 
 pub use records::append_entries::{
     AppendEntriesResponse, AppendEntriesResult, RequestAppendEntries,
@@ -45,6 +47,7 @@ pub use records::append_entries::{
 pub use records::install_snapshot::{InstallSnapshotResponse, RequestInstallSnapshot};
 pub use records::log_entry::{ConfigChange, LogEntry, LogPayload};
 pub use records::message::Message;
+pub use records::pre_vote::{PreVoteResponse, RequestPreVote};
 pub use records::timeout_now::TimeoutNow;
 pub use records::vote::{RequestVote, VoteResponse, VoteResult};
 

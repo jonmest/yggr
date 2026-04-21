@@ -441,6 +441,11 @@ async fn read_linearizable_on_follower_returns_not_leader() {
     config.election_timeout_max_ticks = 5;
     config.heartbeat_interval_ticks = 1;
     config.tick_interval = Duration::from_millis(10);
+    // Without pre-vote, election-timer expiry bumps the term straight
+    // to 1 so the `current_term >= 1` wait below completes. With
+    // pre-vote the probe never succeeds against ghost peers so the
+    // term stays at 0 forever.
+    config.pre_vote = false;
 
     let node = Node::start(config, Counter::default(), storage, transport)
         .await

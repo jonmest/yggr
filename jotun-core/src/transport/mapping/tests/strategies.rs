@@ -6,6 +6,7 @@ use crate::records::{
     install_snapshot::{InstallSnapshotResponse, RequestInstallSnapshot},
     log_entry::{ConfigChange, LogEntry, LogPayload},
     message::Message,
+    pre_vote::{PreVoteResponse, RequestPreVote},
     timeout_now::TimeoutNow,
     vote::{RequestVote, VoteResponse, VoteResult},
 };
@@ -148,6 +149,20 @@ pub(super) fn timeout_now() -> impl Strategy<Value = TimeoutNow> {
     (term(), node_id()).prop_map(|(term, leader_id)| TimeoutNow { term, leader_id })
 }
 
+pub(super) fn request_pre_vote() -> impl Strategy<Value = RequestPreVote> {
+    (term(), node_id(), proptest::option::of(log_id())).prop_map(
+        |(term, candidate_id, last_log_id)| RequestPreVote {
+            term,
+            candidate_id,
+            last_log_id,
+        },
+    )
+}
+
+pub(super) fn pre_vote_response() -> impl Strategy<Value = PreVoteResponse> {
+    (term(), any::<bool>()).prop_map(|(term, granted)| PreVoteResponse { term, granted })
+}
+
 pub(super) fn message() -> impl Strategy<Value = Message<Vec<u8>>> {
     prop_oneof![
         request_vote().prop_map(Message::VoteRequest),
@@ -157,5 +172,7 @@ pub(super) fn message() -> impl Strategy<Value = Message<Vec<u8>>> {
         request_install_snapshot().prop_map(Message::InstallSnapshotRequest),
         install_snapshot_response().prop_map(Message::InstallSnapshotResponse),
         timeout_now().prop_map(Message::TimeoutNow),
+        request_pre_vote().prop_map(Message::PreVoteRequest),
+        pre_vote_response().prop_map(Message::PreVoteResponse),
     ]
 }
