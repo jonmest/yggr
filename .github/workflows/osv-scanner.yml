@@ -23,7 +23,7 @@ on:
 
 permissions:
   # Require writing security events to upload SARIF file to security tab
-  security-events: write
+  security-events: write # zizmor: ignore[excessive-permissions]
   # Read commit contents
   contents: read
 
