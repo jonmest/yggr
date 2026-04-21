@@ -260,13 +260,8 @@ impl<C: Clone + PartialEq + std::fmt::Debug + 'static> Cluster<C> {
         }
         let peers: Vec<NodeId> = self.nodes.keys().copied().collect();
         let heartbeat = 3_u64;
-        let harness = NodeHarness::with_pre_vote(
-            id,
-            peers,
-            heartbeat,
-            Arc::clone(&self.rng),
-            self.pre_vote,
-        );
+        let harness =
+            NodeHarness::with_pre_vote(id, peers, heartbeat, Arc::clone(&self.rng), self.pre_vote);
         self.nodes.insert(id, harness);
     }
 

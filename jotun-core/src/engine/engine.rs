@@ -570,9 +570,7 @@ impl<C: Clone> Engine<C> {
     #[instrument(target = "jotun::engine", skip_all)]
     fn on_tick(&mut self) -> Vec<Action<C>> {
         match &self.state.role {
-            RoleState::Follower(_)
-            | RoleState::PreCandidate(_)
-            | RoleState::Candidate(_) => {
+            RoleState::Follower(_) | RoleState::PreCandidate(_) | RoleState::Candidate(_) => {
                 self.state.election_elapsed += 1;
                 if self.state.election_elapsed >= self.state.election_timeout_ticks {
                     return self.start_election();
@@ -1289,11 +1287,7 @@ impl<C: Clone> Engine<C> {
     /// doesn't advance terms, so in a freshly-started 3-node cluster
     /// all pre-vote traffic happens at `term = 0`.
     #[instrument(target = "jotun::engine", skip_all)]
-    fn on_pre_vote_response(
-        &mut self,
-        from: NodeId,
-        response: PreVoteResponse,
-    ) -> Vec<Action<C>> {
+    fn on_pre_vote_response(&mut self, from: NodeId, response: PreVoteResponse) -> Vec<Action<C>> {
         if response.term > self.state.current_term {
             let mut out = self.become_follower(response.term);
             out.push(self.persist_hard_state());

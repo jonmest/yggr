@@ -526,6 +526,7 @@ impl Cluster {
         observation: &ClusterObservation,
         leaders_by_term: &mut BTreeMap<Term, NodeId>,
     ) {
+        let _ = self;
         for status in observation.statuses.values() {
             if status.role == Role::Leader {
                 match leaders_by_term.get(&status.current_term) {
@@ -549,6 +550,7 @@ impl Cluster {
         observation: &ClusterObservation,
         prior_statuses: &mut BTreeMap<NodeId, NodeStatus>,
     ) {
+        let _ = self;
         for (node_id, status) in &observation.statuses {
             assert!(
                 status.last_applied <= status.commit_index,
@@ -580,6 +582,7 @@ impl Cluster {
     }
 
     fn check_committed_prefix_consistency(&self, observation: &ClusterObservation) {
+        let _ = self;
         let node_ids: Vec<NodeId> = observation.statuses.keys().copied().collect();
         for (index, left_id) in node_ids.iter().enumerate() {
             for right_id in node_ids.iter().skip(index + 1) {
@@ -605,8 +608,7 @@ impl Cluster {
                     });
                     assert_eq!(
                         left_entry, right_entry,
-                        "Committed-prefix mismatch at {:?} between node {} and node {}",
-                        log_index, left_id, right_id,
+                        "Committed-prefix mismatch at {log_index:?} between node {left_id} and node {right_id}",
                     );
                 }
             }
@@ -618,10 +620,10 @@ impl Cluster {
         observation: &ClusterObservation,
         committed_prefix: &mut BTreeMap<LogIndex, LogEntry<Vec<u8>>>,
     ) {
+        let _ = self;
         let max_recorded = committed_prefix
             .last_key_value()
-            .map(|(index, _)| *index)
-            .unwrap_or(LogIndex::ZERO);
+            .map_or(LogIndex::ZERO, |(index, _)| *index);
         let source = observation
             .statuses
             .values()
@@ -642,8 +644,7 @@ impl Cluster {
             if let Some(previous) = committed_prefix.insert(log_index, entry.clone()) {
                 assert_eq!(
                     previous, *entry,
-                    "Committed prefix changed at {:?} after it was observed",
-                    log_index,
+                    "Committed prefix changed at {log_index:?} after it was observed",
                 );
             }
         }
@@ -654,6 +655,7 @@ impl Cluster {
         observation: &ClusterObservation,
         committed_prefix: &BTreeMap<LogIndex, LogEntry<Vec<u8>>>,
     ) {
+        let _ = self;
         for status in observation
             .statuses
             .values()

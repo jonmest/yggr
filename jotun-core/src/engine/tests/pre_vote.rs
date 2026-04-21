@@ -166,13 +166,19 @@ fn pre_vote_majority_promotes_to_candidate_and_sends_vote_request() {
         "pre-vote majority must promote to Candidate; got {:?}",
         engine.role(),
     );
-    assert_eq!(engine.current_term(), Term::new(1), "term bumped on promotion");
+    assert_eq!(
+        engine.current_term(),
+        Term::new(1),
+        "term bumped on promotion"
+    );
     // The promotion emits RequestVote to both peers.
     let vrs = collect_vote_requests(&actions);
     assert_eq!(vrs.len(), 2, "RequestVote to each peer, got {vrs:?}");
     // And hard state was persisted (term + self-vote).
     assert!(
-        actions.iter().any(|a| matches!(a, Action::PersistHardState { .. })),
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::PersistHardState { .. })),
         "promotion must persist new term + voted_for=self",
     );
 }
@@ -264,13 +270,8 @@ fn pre_vote_disabled_preserves_legacy_behavior() {
     // explicit-off path), the election timeout drives us straight to
     // Candidate and bumps the term.
     let cfg = EngineConfig::default().with_pre_vote(false);
-    let mut engine: Engine<Vec<u8>> = Engine::with_config(
-        node(1),
-        [node(2), node(3)],
-        Box::new(StaticEnv(10)),
-        1,
-        cfg,
-    );
+    let mut engine: Engine<Vec<u8>> =
+        Engine::with_config(node(1), [node(2), node(3)], Box::new(StaticEnv(10)), 1, cfg);
 
     let mut actions = Vec::new();
     for _ in 0..15 {
