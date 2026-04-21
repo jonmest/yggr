@@ -9,7 +9,7 @@ description = "Batteries-included Raft node runtime built on jotun-core."
 [dependencies]
 jotun-core = { path = "../jotun-core", version = "0.1" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "net", "io-util", "macros", "fs"] }
-prost = "0.13"
+prost = "0.14"
 tracing = "0.1"
 
 [dev-dependencies]
