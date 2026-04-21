@@ -1,8 +1,13 @@
 # yggr
 
+[![Crates.io](https://img.shields.io/crates/v/yggr.svg)](https://crates.io/crates/yggr)
+[![docs.rs](https://img.shields.io/docsrs/yggr)](https://docs.rs/yggr)
+[![CI](https://github.com/jonmest/yggr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jonmest/yggr/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE.md)
+
 A Raft library in Rust. Four crates: a pure protocol engine, a deterministic simulator, a tokio runtime, and an example KV service.
 
-[Guide](https://jonmest.github.io/yggr/guide/) &middot; [API docs](https://jonmest.github.io/yggr/api/yggr/)
+[Guide](https://jonmest.github.io/yggr/guide/) &middot; [API docs](https://docs.rs/yggr) &middot; [Changelog](./CHANGELOG.md)
 
 ```rust
 use yggr::{Config, Node, DiskStorage, TcpTransport};

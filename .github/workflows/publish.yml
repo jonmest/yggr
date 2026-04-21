@@ -1,0 +1,111 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allow a manual run without tagging, e.g. to re-publish after a fix.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run cargo publish --dry-run only (no upload)"
+        required: false
+        type: boolean
+        default: true
+
+# Trusted publishing uses OIDC; no static crates.io token is ever
+# stored in the repo. Per-job `contents: read` is the only write-scope
+# we need beyond that.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Always build and test the exact commit first. Publishing a tag
+  # whose tree doesn't pass CI would be a bad day, and tag pushes
+  # skip the usual CI trigger.
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo test --workspace --all-targets
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  publish-yggr-core:
+    name: Publish yggr-core
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: publish
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Mint crates.io token (trusted publishing)
+        uses: rust-lang/crates-io-auth-action@e919bc7605cde86df457cf5b93c5e103838bd879 # v1.0.1
+        id: auth
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.dry_run }}" = "true" ]; then
+            cargo publish -p yggr-core --dry-run
+          else
+            cargo publish -p yggr-core
+          fi
+
+  publish-yggr:
+    name: Publish yggr
+    needs: publish-yggr-core
+    runs-on: ubuntu-latest
+    environment: publish
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Wait for yggr-core to appear in the index
+        run: |
+          # Give the sparse index up to ~2 minutes to propagate the new
+          # yggr-core version before we try to resolve it as a dep.
+          for i in $(seq 1 24); do
+            if cargo search yggr-core --limit 1 | grep -q '^yggr-core'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "yggr-core did not appear in the index after 120s" >&2
+          exit 1
+      - name: Mint crates.io token (trusted publishing)
+        uses: rust-lang/crates-io-auth-action@e919bc7605cde86df457cf5b93c5e103838bd879 # v1.0.1
+        id: auth
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.dry_run }}" = "true" ]; then
+            cargo publish -p yggr --dry-run
+          else
+            cargo publish -p yggr
+          fi
