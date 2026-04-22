@@ -48,7 +48,7 @@ If you want the closest local approximation of pull-request CI, run:
 just ci-pr
 ```
 
-That adds coverage enforcement, `cargo-udeps`, a loom model test, and the fuzz smoke targets. GitHub Actions still has extra lanes that are either external-service-backed (SonarQube) or intentionally heavier/scheduled (`cargo-mutants`, runtime chaos nightly, Kani, and the longer fuzz/property-test sweeps).
+That adds coverage enforcement, `cargo-udeps`, a loom model test, and the fuzz smoke targets. GitHub Actions still has extra lanes that are either external-service-backed or intentionally heavier/scheduled (`cargo-mutants`, runtime chaos nightly, Kani, and the longer fuzz/property-test sweeps).
 
 ## Pull requests
 
