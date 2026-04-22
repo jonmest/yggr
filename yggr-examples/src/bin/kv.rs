@@ -46,7 +46,7 @@
 //! The entire integration with `yggr` is about 100 lines: implement
 //! `StateMachine` for your KV, ship it to [`yggr::Node::start`],
 //! accept client connections on a separate socket, marshal
-//! commands through `Node::propose`. Everything else — elections,
+//! commands through `Node::write`. Everything else — elections,
 //! replication, persistence, transport, and incoming snapshot
 //! restore/install — the runtime handles. Snapshot creation is driven
 //! by engine hints; if this example overrode `snapshot()`, the runtime
@@ -73,7 +73,7 @@ use yggr::{
 
 /// A tiny in-memory string-keyed / string-valued map. Shared via
 /// `Arc<Mutex<_>>` so the client-port handler can do leader-local
-/// reads directly; writes go through `Node::propose`.
+/// reads directly; writes go through `Node::write`.
 #[derive(Debug, Default, Clone)]
 struct KvState {
     map: BTreeMap<String, String>,
@@ -234,7 +234,7 @@ async fn serve_client(
         let response = match parse_request(line) {
             Ok(Request::Set { key, value }) => {
                 match node
-                    .propose(KvCmd::Set {
+                    .write(KvCmd::Set {
                         key: key.clone(),
                         value,
                     })
@@ -254,7 +254,7 @@ async fn serve_client(
                 let v = state.lock().unwrap().map.get(&key).cloned();
                 v.unwrap_or_else(|| "<nil>".to_string())
             }
-            Ok(Request::Delete { key }) => match node.propose(KvCmd::Delete { key }).await {
+            Ok(Request::Delete { key }) => match node.write(KvCmd::Delete { key }).await {
                 Ok(KvResponse::Prev(Some(v))) => v,
                 Ok(KvResponse::Prev(None)) => "<nil>".to_string(),
                 Ok(KvResponse::Ok) => "OK".to_string(),

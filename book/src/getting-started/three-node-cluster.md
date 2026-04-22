@@ -19,7 +19,7 @@ let transport = TcpTransport::start(my_node_id, listen_addr, peer_addrs).await?;
 let node      = Node::start(config, MyStateMachine::default(), storage, transport).await?;
 ```
 
-The leader accepts `propose(cmd)` from clients. Followers return `NotLeader` with a hint so the client can retry against the right node.
+The leader accepts `write(cmd)` from clients. Followers return `NotLeader` with a hint so the client can retry against the right node.
 
 ## Next
 
