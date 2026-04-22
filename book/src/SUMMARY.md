@@ -15,6 +15,7 @@
 - [Bootstrap modes](./runtime/bootstrap.md)
 - [Linearizable reads](./runtime/read-index.md)
 - [Leadership transfer](./runtime/leadership-transfer.md)
+- [Learners](./runtime/learners.md)
 - [Snapshots](./runtime/snapshots.md)
 - [Observability](./runtime/observability.md)
 
