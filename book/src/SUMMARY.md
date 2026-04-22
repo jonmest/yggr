@@ -13,11 +13,15 @@
 - [The Node API](./runtime/node.md)
 - [Configuration](./runtime/config.md)
 - [Bootstrap modes](./runtime/bootstrap.md)
+- [Writes](./runtime/writes.md)
 - [Linearizable reads](./runtime/read-index.md)
-- [Leadership transfer](./runtime/leadership-transfer.md)
+- [Membership](./runtime/membership.md)
 - [Learners](./runtime/learners.md)
+- [Leadership transfer](./runtime/leadership-transfer.md)
 - [Snapshots](./runtime/snapshots.md)
 - [Observability](./runtime/observability.md)
+- [Errors](./runtime/errors.md)
+- [Operations](./runtime/operations.md)
 
 # Engine
 
