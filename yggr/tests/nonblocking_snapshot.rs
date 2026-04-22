@@ -4,7 +4,12 @@
 //! ticks should keep processing even if `snapshot()` sleeps for a
 //! while. See `feature/nonblocking-snapshots`.
 
-#![allow(clippy::expect_used, clippy::missing_const_for_fn, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::missing_const_for_fn,
+    clippy::unwrap_used,
+    deprecated
+)]
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicUsize, Ordering};

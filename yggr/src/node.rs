@@ -738,6 +738,7 @@ impl<S: StateMachine> Node<S> {
     }
 
     /// Compatibility alias for [`Self::write`].
+    #[deprecated(since = "0.2.0", note = "use `Node::write` instead")]
     pub async fn propose(&self, command: S::Command) -> Result<S::Response, ProposeError> {
         self.write(command).await
     }
@@ -749,8 +750,9 @@ impl<S: StateMachine> Node<S> {
         AdminHandle { node: self.clone() }
     }
 
-    /// Add a peer to the cluster (§4.3 single-server change). Returns
-    /// once the membership change commits.
+    /// Add a peer to the cluster as a voter (§4.3 single-server
+    /// change). Returns once the membership change commits.
+    #[deprecated(since = "0.2.0", note = "use `Node::admin().add_peer(id)` instead")]
     pub async fn add_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
         self.config_change(ConfigChange::AddPeer(peer)).await
     }
@@ -758,6 +760,7 @@ impl<S: StateMachine> Node<S> {
     /// Remove a peer from the cluster (§4.3 single-server change).
     /// Returns once the membership change commits. If the removed
     /// peer is self, the local node steps down on commit.
+    #[deprecated(since = "0.2.0", note = "use `Node::admin().remove_peer(id)` instead")]
     pub async fn remove_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
         self.config_change(ConfigChange::RemovePeer(peer)).await
     }
@@ -812,7 +815,18 @@ impl<S: StateMachine> Node<S> {
     /// Returns once the local driver has accepted the request and
     /// dispatched the engine actions needed to start the transfer. It
     /// does not wait for the new leader to be elected.
+    #[deprecated(
+        since = "0.2.0",
+        note = "use `Node::admin().transfer_leadership(id)` instead"
+    )]
     pub async fn transfer_leadership_to(
+        &self,
+        peer: NodeId,
+    ) -> Result<(), TransferLeadershipError> {
+        self.transfer_leadership_inner(peer).await
+    }
+
+    async fn transfer_leadership_inner(
         &self,
         peer: NodeId,
     ) -> Result<(), TransferLeadershipError> {
@@ -977,14 +991,18 @@ impl<S: StateMachine> AdminHandle<S> {
     /// Add a peer to the cluster as a voter (§4.3 single-server
     /// change). Returns once the change commits.
     pub async fn add_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
-        self.node.add_peer(peer).await
+        self.node
+            .config_change(ConfigChange::AddPeer(peer))
+            .await
     }
 
     /// Remove a peer from the cluster (§4.3 single-server change).
     /// Works for both voters and learners. Returns once the change
     /// commits.
     pub async fn remove_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
-        self.node.remove_peer(peer).await
+        self.node
+            .config_change(ConfigChange::RemovePeer(peer))
+            .await
     }
 
     /// Add `peer` as a non-voting learner (§4.2.1). The learner
@@ -1007,7 +1025,7 @@ impl<S: StateMachine> AdminHandle<S> {
 
     /// Ask the current leader to transfer leadership to `peer`.
     pub async fn transfer_leadership(&self, peer: NodeId) -> Result<(), TransferLeadershipError> {
-        self.node.transfer_leadership_to(peer).await
+        self.node.transfer_leadership_inner(peer).await
     }
 
     /// Initiate a graceful shutdown of the runtime.

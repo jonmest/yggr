@@ -1,7 +1,12 @@
 //! Coverage for the newer runtime-facing `Node` surface: bootstrap
 //! semantics, `status()`, and proposal/config-change backpressure.
 
-#![allow(clippy::expect_used, clippy::missing_const_for_fn, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::missing_const_for_fn,
+    clippy::unwrap_used,
+    deprecated
+)]
 
 use std::collections::BTreeSet;
 use std::convert::Infallible;

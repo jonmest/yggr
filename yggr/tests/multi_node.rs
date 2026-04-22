@@ -16,7 +16,8 @@
     clippy::manual_let_else,
     clippy::manual_assert,
     clippy::match_wildcard_for_single_variants,
-    clippy::single_match
+    clippy::single_match,
+    deprecated
 )]
 
 use std::collections::BTreeMap;

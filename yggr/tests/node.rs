@@ -6,7 +6,8 @@
     clippy::cast_possible_truncation,
     clippy::missing_const_for_fn,
     clippy::unwrap_used,
-    clippy::expect_used
+    clippy::expect_used,
+    deprecated
 )]
 
 use std::collections::BTreeMap;
