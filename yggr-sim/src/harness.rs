@@ -38,7 +38,7 @@ pub(crate) struct PersistedState<C> {
 pub(crate) struct PersistedSnapshot {
     pub(crate) last_included_index: LogIndex,
     pub(crate) last_included_term: Term,
-    pub(crate) peers: BTreeSet<NodeId>,
+    pub(crate) membership: yggr_core::Membership,
     pub(crate) bytes: Vec<u8>,
 }
 
@@ -64,7 +64,7 @@ pub(crate) enum PendingWrite<C> {
     Snapshot {
         last_included_index: LogIndex,
         last_included_term: Term,
-        peers: BTreeSet<NodeId>,
+        membership: yggr_core::Membership,
         bytes: Vec<u8>,
     },
 }
@@ -191,13 +191,13 @@ impl<C: Clone> NodeHarness<C> {
                 Action::PersistSnapshot {
                     last_included_index,
                     last_included_term,
-                    peers,
+                    membership,
                     bytes,
                 } => {
                     self.pending.push(PendingWrite::Snapshot {
                         last_included_index: *last_included_index,
                         last_included_term: *last_included_term,
-                        peers: peers.clone(),
+                        membership: membership.clone(),
                         bytes: bytes.clone(),
                     });
                 }
@@ -290,13 +290,13 @@ fn apply_write<C>(persisted: &mut PersistedState<C>, write: PendingWrite<C>) {
         PendingWrite::Snapshot {
             last_included_index,
             last_included_term,
-            peers,
+            membership,
             bytes,
         } => {
             persisted.snapshot = Some(PersistedSnapshot {
                 last_included_index,
                 last_included_term,
-                peers,
+                membership,
                 bytes,
             });
             // Drop log entries up to and including the snapshot floor.
@@ -334,7 +334,7 @@ fn hydrate_engine<C: Clone>(engine: &mut Engine<C>, persisted: &PersistedState<C
     let snapshot = persisted.snapshot.as_ref().map(|s| RecoveredSnapshot {
         last_included_index: s.last_included_index,
         last_included_term: s.last_included_term,
-        peers: s.peers.clone(),
+        membership: s.membership.clone(),
         bytes: s.bytes.clone(),
     });
     engine.recover_from(RecoveredHardState {

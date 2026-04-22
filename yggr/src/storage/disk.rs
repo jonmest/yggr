@@ -529,6 +529,9 @@ where
         Ok(())
     }
 
+    // Single contiguous persist + compaction sequence; splitting it
+    // would only obscure the atomic-replace + log-compaction ordering.
+    #[allow(clippy::too_many_lines)]
     async fn persist_snapshot(&mut self, snap: StoredSnapshot) -> Result<(), Self::Error> {
         // Snapshot meta:
         // Old format:

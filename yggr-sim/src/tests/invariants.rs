@@ -6,7 +6,7 @@
 //! we know the harness catches real violations, not just that
 //! passing cases pass.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use yggr_core::{LogEntry, LogId, LogIndex, LogPayload, NodeId, Term};
 
@@ -113,7 +113,7 @@ fn happy_run_accumulates_committed_and_applied_without_violation() {
 
 #[test]
 fn log_matching_checks_post_snapshot_disagreement_above_snapshot_floor() {
-    let peers = BTreeSet::from([node(1), node(2)]);
+    let membership = yggr_core::Membership::with_voters([node(1), node(2)]);
     let mut nodes: BTreeMap<NodeId, NodeHarness<u64>> = BTreeMap::new();
     nodes.insert(
         node(1),
@@ -127,7 +127,7 @@ fn log_matching_checks_post_snapshot_disagreement_above_snapshot_floor() {
                 snapshot: Some(PersistedSnapshot {
                     last_included_index: LogIndex::new(3),
                     last_included_term: Term::new(1),
-                    peers: peers.clone(),
+                    membership: membership.clone(),
                     bytes: b"a".to_vec(),
                 }),
             },
@@ -149,7 +149,7 @@ fn log_matching_checks_post_snapshot_disagreement_above_snapshot_floor() {
                 snapshot: Some(PersistedSnapshot {
                     last_included_index: LogIndex::new(2),
                     last_included_term: Term::new(1),
-                    peers,
+                    membership,
                     bytes: b"b".to_vec(),
                 }),
             },

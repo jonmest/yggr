@@ -744,6 +744,7 @@ impl<S: StateMachine> Node<S> {
 
     /// Return an operator-facing handle for membership and lifecycle
     /// operations.
+    #[must_use]
     pub fn admin(&self) -> AdminHandle<S> {
         AdminHandle { node: self.clone() }
     }
