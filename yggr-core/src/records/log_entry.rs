@@ -4,18 +4,32 @@ use crate::types::{log::LogId, node::NodeId};
 /// log entry.
 ///
 /// Implements §4.3 of the Raft thesis (single-server changes): exactly
-/// one Add or Remove per entry, never a batch. The leader is responsible
+/// one change per entry, never a batch. The leader is responsible
 /// for refusing to append a new `ConfigChange` while another is still
 /// uncommitted, which keeps the old and new majorities overlapping.
+///
+/// Voter vs learner semantics:
+///  - Voters count toward quorum and can campaign.
+///  - Learners receive replication but never count toward quorum and
+///    never campaign (§4.2.1 non-voting servers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigChange {
-    /// Add `peer` to the cluster. Takes effect on every node the
-    /// instant the entry hits its log (pre-commit), per §4.3.
+    /// Add `peer` to the cluster as a voter. Takes effect on every
+    /// node the instant the entry hits its log (pre-commit), per §4.3.
     AddPeer(NodeId),
     /// Remove `peer` from the cluster. Same pre-commit semantics as
     /// `AddPeer`. A leader removing itself steps down once the entry
-    /// commits.
+    /// commits. Removes either a voter or a learner.
     RemovePeer(NodeId),
+    /// Add `peer` to the cluster as a non-voting learner. Receives
+    /// replication but doesn't count toward quorum or campaign. No-op
+    /// if the peer is already a voter.
+    AddLearner(NodeId),
+    /// Promote `peer` from learner to voter. No-op if the peer is
+    /// already a voter. Fails silently (no state change) if the peer
+    /// isn't a learner — the leader is expected to gate this at
+    /// propose time.
+    PromoteLearner(NodeId),
 }
 
 /// Payload carried by a [`LogEntry`].

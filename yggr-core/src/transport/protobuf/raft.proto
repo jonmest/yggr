@@ -21,10 +21,13 @@ message LogEntry {
 message Noop {}
 
 // Single-server cluster membership change (§4.3 of the Raft thesis).
+// Voters count toward quorum; learners (§4.2.1) do not.
 message ConfigChange {
   oneof kind {
-    NodeIdRef add_peer = 1;
-    NodeIdRef remove_peer = 2;
+    NodeIdRef add_peer = 1;        // adds a voter
+    NodeIdRef remove_peer = 2;     // removes a voter or a learner
+    NodeIdRef add_learner = 3;
+    NodeIdRef promote_learner = 4;
   }
 }
 

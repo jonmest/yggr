@@ -436,6 +436,16 @@ pub(super) fn propose_remove_peer(id: u64) -> Event<Vec<u8>> {
     Event::ProposeConfigChange(ConfigChange::RemovePeer(node(id)))
 }
 
+pub(super) fn propose_add_learner(id: u64) -> Event<Vec<u8>> {
+    use crate::records::log_entry::ConfigChange;
+    Event::ProposeConfigChange(ConfigChange::AddLearner(node(id)))
+}
+
+pub(super) fn propose_promote_learner(id: u64) -> Event<Vec<u8>> {
+    use crate::records::log_entry::ConfigChange;
+    Event::ProposeConfigChange(ConfigChange::PromoteLearner(node(id)))
+}
+
 pub(super) fn client_proposal(command: &[u8]) -> Event<Vec<u8>> {
     Event::ClientProposal(command.to_vec())
 }

@@ -89,19 +89,27 @@ impl PeerProgress {
         }
     }
 
-    /// Highest index replicated on a majority of the cluster (leader
-    /// included). Input `leader_last_log` is the leader's own "matchIndex"
-    /// — the last index present in its log, which is trivially replicated.
+    /// Highest index replicated on a majority of the voting cluster
+    /// (leader included). Non-voter peers — learners — are excluded
+    /// from the tally. `voters` is the set of peer ids that currently
+    /// count toward quorum (leader not expected to be in the set;
+    /// it's folded in via `leader_last_log`).
     ///
-    /// Algorithm (§5.3): sort all `matchIndex` values along with the
-    /// leader's own, and pick the median (lower-middle for even sizes). This
-    /// is the highest `N` such that `matchIndex[i] >= N` for a majority.
-    pub(crate) fn majority_index(&self, leader_last_log: LogIndex) -> LogIndex {
-        let mut values: Vec<LogIndex> = self.match_index.values().copied().collect();
+    /// Algorithm (§5.3): sort the voter `matchIndex` values along
+    /// with the leader's own last index, pick the median (lower-middle
+    /// for even sizes).
+    pub(crate) fn majority_index_over_voters(
+        &self,
+        leader_last_log: LogIndex,
+        voters: &std::collections::BTreeSet<NodeId>,
+    ) -> LogIndex {
+        let mut values: Vec<LogIndex> = voters
+            .iter()
+            .map(|v| self.match_index.get(v).copied().unwrap_or(LogIndex::ZERO))
+            .collect();
         values.push(leader_last_log);
         values.sort_unstable();
         let pos = (values.len() - 1) / 2;
-        // `values` is non-empty (we just pushed), so `pos < values.len()`.
         #[allow(clippy::indexing_slicing)]
         values[pos]
     }
@@ -162,6 +170,12 @@ mod tests {
 
     fn idx(n: u64) -> LogIndex {
         LogIndex::new(n)
+    }
+
+    /// Treat every tracked peer in `pp` as a voter. Cuts test noise
+    /// when a scenario has no learners.
+    fn all_as_voters(pp: &PeerProgress) -> std::collections::BTreeSet<NodeId> {
+        pp.peers().collect()
     }
 
     // ---------------- construction ----------------
@@ -285,7 +299,7 @@ mod tests {
         pp.record_success(node(2), idx(5));
         pp.record_success(node(3), idx(3));
         // Sorted values: [3, 5, 7]. Pos 1 = 5.
-        assert_eq!(pp.majority_index(idx(7)), idx(5));
+        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(5));
     }
 
     #[test]
@@ -298,21 +312,21 @@ mod tests {
         pp.record_success(node(4), idx(3));
         pp.record_success(node(5), idx(2));
         // Sorted values: [2, 3, 5, 5, 7]. Pos 2 = 5.
-        assert_eq!(pp.majority_index(idx(7)), idx(5));
+        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(5));
     }
 
     #[test]
     fn majority_index_without_replication_is_zero() {
         let pp = PeerProgress::new([node(2), node(3)], idx(7));
         // Sorted values: [0, 0, 7]. Pos 1 = 0 — leader alone isn't a majority.
-        assert_eq!(pp.majority_index(idx(7)), LogIndex::ZERO);
+        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), LogIndex::ZERO);
     }
 
     #[test]
     fn majority_index_with_no_peers_returns_leader_last() {
         let pp = PeerProgress::new(std::iter::empty(), idx(5));
         // Only the leader. Cluster of 1, majority of 1 = the leader itself.
-        assert_eq!(pp.majority_index(idx(5)), idx(5));
+        assert_eq!(pp.majority_index_over_voters(idx(5), &all_as_voters(&pp)), idx(5));
     }
 
     #[test]
@@ -324,7 +338,7 @@ mod tests {
         pp.record_success(node(3), idx(5));
         pp.record_success(node(4), idx(2));
         // Sorted values: [2, 5, 5, 7]. Pos 1 = 5. Three of four are ≥ 5. ✓
-        assert_eq!(pp.majority_index(idx(7)), idx(5));
+        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(5));
     }
 
     #[test]
@@ -340,7 +354,7 @@ mod tests {
         // Sorted values: [2, 3, 5, 7]. Pos 1 = 3 (three of four ≥ 3).
         // Upper-middle would be 5, but only two of four are ≥ 5, so 5
         // is NOT a safe commit point.
-        assert_eq!(pp.majority_index(idx(7)), idx(3));
+        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(3));
     }
 
     // ---------------- record_success vs stale after conflict ----------------
@@ -438,7 +452,7 @@ mod tests {
                 let m = leader_last * r / 100;
                 pp.record_success(*peer, idx(m));
             }
-            let majority = pp.majority_index(idx(leader_last));
+            let majority = pp.majority_index_over_voters(idx(leader_last), &all_as_voters(&pp));
             prop_assert!(majority <= idx(leader_last));
         }
 
@@ -481,8 +495,8 @@ mod tests {
             }
 
             prop_assert_eq!(
-                pp_a.majority_index(idx(leader_last)),
-                pp_b.majority_index(idx(leader_last)),
+                pp_a.majority_index_over_voters(idx(leader_last), &all_as_voters(&pp_a)),
+                pp_b.majority_index_over_voters(idx(leader_last), &all_as_voters(&pp_b)),
                 "majority_index depends on insertion order",
             );
         }
@@ -505,7 +519,7 @@ mod tests {
             let cluster_size = peers.len() + 1; // +1 for leader
             let threshold = cluster_size / 2 + 1;
 
-            let majority = pp.majority_index(idx(leader_last));
+            let majority = pp.majority_index_over_voters(idx(leader_last), &all_as_voters(&pp));
 
             // Collect all values including leader's.
             let mut all: Vec<u64> = peers

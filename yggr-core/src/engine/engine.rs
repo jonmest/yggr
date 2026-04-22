@@ -1040,8 +1040,20 @@ impl<C: Clone> Engine<C> {
     fn is_config_change_noop(&self, change: ConfigChange) -> bool {
         match change {
             ConfigChange::AddPeer(id) => id == self.id || self.state.membership.contains_voter(&id),
+            // Self-remove is a real operation (triggers step-down); only
+            // remove-of-unknown-peer is a no-op.
             ConfigChange::RemovePeer(id) => {
-                id != self.id && !self.state.membership.contains_voter(&id)
+                id != self.id
+                    && !self.state.membership.contains_voter(&id)
+                    && !self.state.membership.contains_learner(&id)
+            }
+            ConfigChange::AddLearner(id) => {
+                id == self.id
+                    || self.state.membership.contains_voter(&id)
+                    || self.state.membership.contains_learner(&id)
+            }
+            ConfigChange::PromoteLearner(id) => {
+                id == self.id || !self.state.membership.contains_learner(&id)
             }
         }
     }
@@ -1077,12 +1089,46 @@ impl<C: Clone> Engine<C> {
             ConfigChange::RemovePeer(id) => {
                 if id != self.id {
                     self.state.membership.remove_voter(id);
+                    self.state.membership.remove_learner(id);
                     if let RoleState::Leader(l) = &mut self.state.role {
                         l.progress.remove_peer(id);
                         l.snapshot_transfers.remove(&id);
                         if l.transfer_target == Some(id) {
                             l.transfer_target = None;
                         }
+                    }
+                }
+            }
+            ConfigChange::AddLearner(id) => {
+                // Learner status applies to the self id too: a node
+                // added as a learner must know it's a learner so it
+                // suppresses candidacy and vote grants.
+                self.state.membership.add_learner(id);
+                if id != self.id
+                    && let RoleState::Leader(l) = &mut self.state.role
+                {
+                    let leader_last = self
+                        .state
+                        .log
+                        .last_log_id()
+                        .map_or(LogIndex::ZERO, |l| l.index);
+                    l.progress.add_peer(id, leader_last);
+                }
+            }
+            ConfigChange::PromoteLearner(id) => {
+                // Promotion applies to self too — a self-promotion is
+                // how a former learner starts counting as a voter.
+                if self.state.membership.contains_learner(&id) {
+                    self.state.membership.add_voter(id);
+                    if id != self.id
+                        && let RoleState::Leader(l) = &mut self.state.role
+                    {
+                        let leader_last = self
+                            .state
+                            .log
+                            .last_log_id()
+                            .map_or(LogIndex::ZERO, |l| l.index);
+                        l.progress.add_peer(id, leader_last);
                     }
                 }
             }
@@ -1198,8 +1244,12 @@ impl<C: Clone> Engine<C> {
             .voted_for
             .is_none_or(|v| v == request.candidate_id);
         let candidate_log_valid = self.state.log.is_superseded_by(request.last_log_id);
+        // §4.2.1: a learner is not a voting member; it must not grant
+        // votes. Dropping the vote at the source is belt — the
+        // candidate also filters non-voter grants, which is suspenders.
+        let self_is_voter = !self.state.membership.contains_learner(&self.id);
 
-        let granted = is_valid_term && is_vote_available && candidate_log_valid;
+        let granted = is_valid_term && is_vote_available && candidate_log_valid && self_is_voter;
         if granted {
             self.state.voted_for = Some(request.candidate_id);
             self.reset_election_timer();
@@ -1261,10 +1311,21 @@ impl<C: Clone> Engine<C> {
         vec![]
     }
 
-    /// True iff we're a candidate whose tally has reached cluster majority.
+    /// True iff we're a candidate whose tally has reached cluster
+    /// majority. Only votes from current voters count — learner grants
+    /// are ignored even if they somehow reached us.
     fn has_majority_votes(&self) -> bool {
         match self.role() {
-            RoleState::Candidate(state) => state.votes_granted.len() >= self.cluster_majority(),
+            RoleState::Candidate(state) => {
+                let voter_grants = state
+                    .votes_granted
+                    .iter()
+                    .filter(|id| {
+                        **id == self.id || self.state.membership.contains_voter(id)
+                    })
+                    .count();
+                voter_grants >= self.cluster_majority()
+            }
             _ => false,
         }
     }
@@ -1279,6 +1340,14 @@ impl<C: Clone> Engine<C> {
     /// the pre-vote majority check and the vote majority check both
     /// pass with one grant.
     fn start_election(&mut self) -> Vec<Action<C>> {
+        // §4.2.1: learners never campaign. An election-timer expiry
+        // on a learner resets the timer and does nothing else — we
+        // will get replication from the current leader or the next
+        // one.
+        if self.state.membership.contains_learner(&self.id) {
+            self.reset_election_timer();
+            return vec![];
+        }
         self.metrics.elections_started += 1;
         if self.pre_vote {
             return self.start_pre_election();
@@ -1373,7 +1442,16 @@ impl<C: Clone> Engine<C> {
     /// reached cluster majority.
     fn has_pre_vote_majority(&self) -> bool {
         match self.role() {
-            RoleState::PreCandidate(p) => p.grants.len() >= self.cluster_majority(),
+            RoleState::PreCandidate(p) => {
+                let voter_grants = p
+                    .grants
+                    .iter()
+                    .filter(|id| {
+                        **id == self.id || self.state.membership.contains_voter(id)
+                    })
+                    .count();
+                voter_grants >= self.cluster_majority()
+            }
             _ => false,
         }
     }
@@ -1411,7 +1489,9 @@ impl<C: Clone> Engine<C> {
             // someone; reject pre-votes from other challengers.
             RoleState::PreCandidate(_) | RoleState::Candidate(_) => false,
         };
-        let granted = log_ok && !leader_recent && request.term > self.state.current_term;
+        let self_is_voter = !self.state.membership.contains_learner(&self.id);
+        let granted =
+            self_is_voter && log_ok && !leader_recent && request.term > self.state.current_term;
         if granted {
             self.metrics.pre_votes_granted += 1;
         } else {
@@ -1454,9 +1534,9 @@ impl<C: Clone> Engine<C> {
         }
         if let RoleState::PreCandidate(p) = &mut self.state.role {
             p.grants.insert(from);
-            if p.grants.len() >= self.cluster_majority() {
-                return self.promote_pre_candidate_to_candidate();
-            }
+        }
+        if self.has_pre_vote_majority() {
+            return self.promote_pre_candidate_to_candidate();
         }
         vec![]
     }
@@ -1998,10 +2078,11 @@ impl<C: Clone> Engine<C> {
             .log
             .last_log_id()
             .map_or(LogIndex::ZERO, |l| l.index);
+        let voters = self.state.membership.voters().clone();
         let RoleState::Leader(leader) = &self.state.role else {
             unreachable!("just matched");
         };
-        let n = leader.progress.majority_index(leader_last);
+        let n = leader.progress.majority_index_over_voters(leader_last, &voters);
         if n > self.state.commit_index && self.state.log.term_at(n) == Some(self.state.current_term)
         {
             let prior_commit = self.state.commit_index;
@@ -2069,7 +2150,17 @@ impl<C: Clone> Engine<C> {
         if let RoleState::Leader(leader) = &mut self.state.role {
             leader.heartbeat_seq = leader.heartbeat_seq.wrapping_add(1);
         }
-        let peers: Vec<NodeId> = self.state.membership.voters().iter().copied().collect();
+        // Learners receive replication just like voters; only the
+        // quorum calculation (majority_index_over_voters) filters them
+        // out. Iterate the union of voter and learner sets.
+        let peers: Vec<NodeId> = self
+            .state
+            .membership
+            .voters()
+            .iter()
+            .chain(self.state.membership.learners().iter())
+            .copied()
+            .collect();
         peers
             .into_iter()
             .map(|peer| self.append_entries_to(peer))
@@ -2565,6 +2656,17 @@ fn apply_config_to_membership(membership: &mut Membership, change: ConfigChange,
         }
         ConfigChange::RemovePeer(id) if id != self_id => {
             membership.remove_voter(id);
+            membership.remove_learner(id);
+        }
+        // AddLearner / PromoteLearner apply to the self id too so a
+        // node can track its own learner / voter status.
+        ConfigChange::AddLearner(id) => {
+            membership.add_learner(id);
+        }
+        ConfigChange::PromoteLearner(id) => {
+            if membership.contains_learner(&id) {
+                membership.add_voter(id);
+            }
         }
         _ => {}
     }

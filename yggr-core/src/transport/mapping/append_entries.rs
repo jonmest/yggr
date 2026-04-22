@@ -13,6 +13,10 @@ impl From<ConfigChange> for proto::ConfigChange {
         let kind = match v {
             ConfigChange::AddPeer(id) => Kind::AddPeer(proto::NodeIdRef { id: id.get() }),
             ConfigChange::RemovePeer(id) => Kind::RemovePeer(proto::NodeIdRef { id: id.get() }),
+            ConfigChange::AddLearner(id) => Kind::AddLearner(proto::NodeIdRef { id: id.get() }),
+            ConfigChange::PromoteLearner(id) => {
+                Kind::PromoteLearner(proto::NodeIdRef { id: id.get() })
+            }
         };
         Self { kind: Some(kind) }
     }
@@ -31,6 +35,12 @@ impl TryFrom<proto::ConfigChange> for ConfigChange {
                 NodeId::new(r.id).ok_or(ConvertError::ZeroNodeId)?,
             )),
             Kind::RemovePeer(r) => Ok(ConfigChange::RemovePeer(
+                NodeId::new(r.id).ok_or(ConvertError::ZeroNodeId)?,
+            )),
+            Kind::AddLearner(r) => Ok(ConfigChange::AddLearner(
+                NodeId::new(r.id).ok_or(ConvertError::ZeroNodeId)?,
+            )),
+            Kind::PromoteLearner(r) => Ok(ConfigChange::PromoteLearner(
                 NodeId::new(r.id).ok_or(ConvertError::ZeroNodeId)?,
             )),
         }
