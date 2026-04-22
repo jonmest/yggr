@@ -974,16 +974,35 @@ impl<S: StateMachine> Node<S> {
 }
 
 impl<S: StateMachine> AdminHandle<S> {
-    /// Add a peer to the cluster (§4.3 single-server change). Returns
-    /// once the membership change commits.
+    /// Add a peer to the cluster as a voter (§4.3 single-server
+    /// change). Returns once the change commits.
     pub async fn add_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
         self.node.add_peer(peer).await
     }
 
     /// Remove a peer from the cluster (§4.3 single-server change).
-    /// Returns once the membership change commits.
+    /// Works for both voters and learners. Returns once the change
+    /// commits.
     pub async fn remove_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
         self.node.remove_peer(peer).await
+    }
+
+    /// Add `peer` as a non-voting learner (§4.2.1). The learner
+    /// receives replication and snapshots immediately but does not
+    /// count toward quorum and never campaigns. Returns once the
+    /// change commits.
+    pub async fn add_learner(&self, peer: NodeId) -> Result<(), ProposeError> {
+        self.node
+            .config_change(ConfigChange::AddLearner(peer))
+            .await
+    }
+
+    /// Promote `peer` from learner to voter. Returns once the change
+    /// commits. No-op if `peer` is already a voter.
+    pub async fn promote_learner(&self, peer: NodeId) -> Result<(), ProposeError> {
+        self.node
+            .config_change(ConfigChange::PromoteLearner(peer))
+            .await
     }
 
     /// Ask the current leader to transfer leadership to `peer`.
@@ -1790,7 +1809,32 @@ where
     if d.engine.commit_index() > d.last_applied {
         d.last_applied = d.engine.commit_index();
     }
+    // A ConfigChange commit doesn't surface as Action::Apply (the
+    // engine filters non-Command entries out of drain_apply), so
+    // apply_entries never runs — meaning its CC-waiter fire block
+    // never runs either. Fire them here on every action batch.
+    fire_committed_config_change_waiters(d);
     Ok(())
+}
+
+fn fire_committed_config_change_waiters<S, St, Tr>(d: &mut Driver<S, St, Tr>)
+where
+    S: StateMachine,
+    St: Storage<Vec<u8>>,
+    Tr: Transport<Vec<u8>>,
+{
+    let commit = d.engine.commit_index();
+    let to_fire: Vec<LogIndex> = d
+        .pending_config_changes
+        .keys()
+        .copied()
+        .filter(|&idx| idx <= commit)
+        .collect();
+    for idx in to_fire {
+        if let Some(reply) = d.pending_config_changes.remove(&idx) {
+            let _ = reply.send(Ok(()));
+        }
+    }
 }
 
 fn build_status<S, St, Tr>(d: &Driver<S, St, Tr>) -> NodeStatus

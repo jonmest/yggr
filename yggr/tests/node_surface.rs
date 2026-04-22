@@ -1379,6 +1379,18 @@ async fn admin_handle_forwards_membership_and_transfer_operations() {
         "got {err:?}"
     );
 
+    let err = admin.add_learner(nid(9)).await.unwrap_err();
+    assert!(
+        matches!(err, ProposeError::NoLeader | ProposeError::NotLeader { .. }),
+        "got {err:?}"
+    );
+
+    let err = admin.promote_learner(nid(9)).await.unwrap_err();
+    assert!(
+        matches!(err, ProposeError::NoLeader | ProposeError::NotLeader { .. }),
+        "got {err:?}"
+    );
+
     let err = admin.transfer_leadership(nid(2)).await.unwrap_err();
     assert!(
         matches!(
@@ -1387,6 +1399,39 @@ async fn admin_handle_forwards_membership_and_transfer_operations() {
         ),
         "got {err:?}"
     );
+
+    admin.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn admin_add_learner_commits_on_single_node_leader() {
+    // On a single-node cluster, AddLearner commits immediately: the
+    // learner doesn't join the voter set, so the leader alone is
+    // still a majority. Promotion requires a real peer to ack, so
+    // that leg is exercised in multi-node tests.
+    let (transport, _handle) = TestTransport::new();
+    let node = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        MemoryStorage::<Vec<u8>>::default(),
+        transport,
+    )
+    .await
+    .unwrap();
+    let admin = node.admin();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader" && status.commit_index >= LogIndex::new(1)
+    })
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(2), admin.add_learner(nid(2)))
+        .await
+        .expect("add_learner timed out")
+        .unwrap();
+    let status = node.status().await.unwrap();
+    assert!(status.membership.learners.contains(&nid(2)));
+    assert!(!status.membership.voters.contains(&nid(2)));
 
     admin.shutdown().await.unwrap();
 }
