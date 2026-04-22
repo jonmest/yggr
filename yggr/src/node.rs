@@ -4,7 +4,7 @@
 //! Architecture: a single owner task ("the driver") holds the
 //! [`yggr_core::Engine`], the user's [`StateMachine`], the
 //! [`Storage`] handle, and the [`Transport`]. Public methods on
-//! [`Node`] (`propose`, `add_peer`, `remove_peer`,
+//! [`Node`] (`write`, `propose`, `add_peer`, `remove_peer`,
 //! `transfer_leadership_to`, `shutdown`)
 //! package a `DriverInput` into a channel and `await` a oneshot
 //! reply. The driver's loop multiplexes:
@@ -54,6 +54,15 @@ pub struct Node<S: StateMachine> {
     background: Arc<Mutex<Option<BackgroundTasks>>>,
 }
 
+/// Operator-facing control handle for a running [`Node`].
+///
+/// This keeps the common client path (`write`, `read_linearizable`,
+/// `status`, `metrics`) separate from membership and lifecycle
+/// operations without changing the underlying runtime semantics.
+pub struct AdminHandle<S: StateMachine> {
+    node: Node<S>,
+}
+
 impl<S: StateMachine> std::fmt::Debug for Node<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Node").finish_non_exhaustive()
@@ -65,6 +74,20 @@ impl<S: StateMachine> Clone for Node<S> {
         Self {
             inputs: self.inputs.clone(),
             background: Arc::clone(&self.background),
+        }
+    }
+}
+
+impl<S: StateMachine> std::fmt::Debug for AdminHandle<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminHandle").finish_non_exhaustive()
+    }
+}
+
+impl<S: StateMachine> Clone for AdminHandle<S> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
         }
     }
 }
@@ -533,6 +556,9 @@ impl<E: std::error::Error + 'static> std::error::Error for NodeStartError<E> {
     }
 }
 
+/// Preferred name for the client write path.
+pub type WriteError = ProposeError;
+
 impl<S: StateMachine> Node<S> {
     /// Boot a node: recover any persisted state, build the engine,
     /// spawn the driver.
@@ -656,7 +682,10 @@ impl<S: StateMachine> Node<S> {
     /// applied locally — meaning it committed via majority replication
     /// AND the engine handed it back to the state machine — and
     /// returns whatever the state machine produced.
-    pub async fn propose(&self, command: S::Command) -> Result<S::Response, ProposeError> {
+    ///
+    /// `write()` is the preferred spelling for this client workflow;
+    /// `propose()` remains as a compatibility alias.
+    pub async fn write(&self, command: S::Command) -> Result<S::Response, WriteError> {
         let (tx, rx) = oneshot::channel();
         if self
             .inputs
@@ -670,6 +699,17 @@ impl<S: StateMachine> Node<S> {
             Ok(r) => r,
             Err(_) => Err(ProposeError::DriverDead),
         }
+    }
+
+    /// Compatibility alias for [`Self::write`].
+    pub async fn propose(&self, command: S::Command) -> Result<S::Response, ProposeError> {
+        self.write(command).await
+    }
+
+    /// Return an operator-facing handle for membership and lifecycle
+    /// operations.
+    pub fn admin(&self) -> AdminHandle<S> {
+        AdminHandle { node: self.clone() }
     }
 
     /// Add a peer to the cluster (§4.3 single-server change). Returns
@@ -796,6 +836,12 @@ impl<S: StateMachine> Node<S> {
         }
     }
 
+    /// Return the current leader hint, if known, without forcing
+    /// callers to inspect the full [`NodeStatus`].
+    pub async fn current_leader(&self) -> Result<Option<NodeId>, ProposeError> {
+        Ok(self.status().await?.leader_hint)
+    }
+
     /// Pull a snapshot of the engine's observability counters and
     /// gauges. Counters (`*_sent`, `*_received`, `*_granted`, …) only
     /// move forward over the lifetime of the node; gauges
@@ -873,6 +919,30 @@ impl<S: StateMachine> Node<S> {
             Ok(()) => Ok(()),
             Err(_) => Err(ProposeError::DriverDead),
         }
+    }
+}
+
+impl<S: StateMachine> AdminHandle<S> {
+    /// Add a peer to the cluster (§4.3 single-server change). Returns
+    /// once the membership change commits.
+    pub async fn add_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
+        self.node.add_peer(peer).await
+    }
+
+    /// Remove a peer from the cluster (§4.3 single-server change).
+    /// Returns once the membership change commits.
+    pub async fn remove_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
+        self.node.remove_peer(peer).await
+    }
+
+    /// Ask the current leader to transfer leadership to `peer`.
+    pub async fn transfer_leadership(&self, peer: NodeId) -> Result<(), TransferLeadershipError> {
+        self.node.transfer_leadership_to(peer).await
+    }
+
+    /// Initiate a graceful shutdown of the runtime.
+    pub async fn shutdown(self) -> Result<(), ProposeError> {
+        self.node.shutdown().await
     }
 }
 

@@ -1318,3 +1318,70 @@ async fn add_peer_on_leader_appends_config_change() {
     }
     assert!(saw_config_change, "leader never broadcast ConfigChange");
 }
+
+#[tokio::test]
+async fn write_alias_matches_propose_semantics() {
+    let (transport, _handle) = TestTransport::new();
+    let node = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        MemoryStorage::<Vec<u8>>::default(),
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader" && status.commit_index >= LogIndex::new(1)
+    })
+    .await;
+
+    assert_eq!(node.write(CountCmd::Inc(5)).await.unwrap(), 5);
+    assert_eq!(node.propose(CountCmd::Inc(3)).await.unwrap(), 8);
+
+    let status = node.status().await.unwrap();
+    assert_eq!(status.last_applied, LogIndex::new(3), "{status:?}");
+
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn current_leader_matches_status_hint() {
+    let (node, _handle) = start_three_node_leader(16).await;
+
+    let status = node.status().await.unwrap();
+    assert_eq!(node.current_leader().await.unwrap(), status.leader_hint);
+
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn admin_handle_forwards_membership_and_transfer_operations() {
+    let (transport, _handle) = TestTransport::new();
+    let node = Node::start(
+        fast_three_node_config(16),
+        Counter::default(),
+        MemoryStorage::<Vec<u8>>::default(),
+        transport,
+    )
+    .await
+    .unwrap();
+    let admin = node.admin();
+
+    let err = admin.add_peer(nid(9)).await.unwrap_err();
+    assert!(
+        matches!(err, ProposeError::NoLeader | ProposeError::NotLeader { .. }),
+        "got {err:?}"
+    );
+
+    let err = admin.transfer_leadership(nid(2)).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            TransferLeadershipError::NoLeader | TransferLeadershipError::NotLeader { .. }
+        ),
+        "got {err:?}"
+    );
+
+    admin.shutdown().await.unwrap();
+}

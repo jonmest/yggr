@@ -14,9 +14,12 @@ let node = Node::start(config, state_machine, storage, transport).await?;
 
 | Method | Behavior |
 |---|---|
-| `propose(cmd)` | Replicate a command. Returns when it commits and applies. |
+| `write(cmd)` | Preferred client-write API. Returns when the command commits and applies. |
+| `propose(cmd)` | Compatibility alias for `write(cmd)`. |
 | `add_peer(id)` / `remove_peer(id)` | §4.3 single-server membership change. |
 | `read_linearizable(closure)` | Run `closure` against the state machine at a linearizable read point (ReadIndex, §8). |
+| `admin()` | Return an operator-facing handle for membership and lifecycle operations. |
+| `current_leader()` | Return the current leader hint, if known. |
 | `transfer_leadership_to(peer)` | Hand leadership to a follower. |
 | `status()` | Current role, term, commit index, known leader. |
 | `shutdown()` | Drain and stop every background task. |
