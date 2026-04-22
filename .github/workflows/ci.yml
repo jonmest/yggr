@@ -277,7 +277,7 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Run bounded proofs on yggr-core
-        uses: model-checking/kani-github-action@v1
+        uses: model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f
         with:
           args: -p yggr-core --output-format=terse
 
