@@ -7,7 +7,7 @@
 
 A Raft library in Rust. Four crates: a pure protocol engine, a deterministic simulator, a tokio runtime, and an example KV service.
 
-[Guide](https://jonmest.github.io/yggr/guide/) &middot; [API docs](https://docs.rs/yggr) &middot; [Changelog](./CHANGELOG.md)
+[Guide](https://jonmest.github.io/yggr/guide/) &middot; [API docs](https://docs.rs/yggr) &middot; [Testing](./TESTING.md) &middot; [Changelog](./CHANGELOG.md)
 
 ```rust
 use yggr::{Config, Node, DiskStorage, TcpTransport};
@@ -60,6 +60,7 @@ just test
 just clippy
 just coverage
 just fuzz-check
+just docs-check
 ```
 
 ## Testing
@@ -71,7 +72,9 @@ The library is tested in four layers.
 3. Sim chaos. 128 seeds, 1500 steps, on 3-, 5-, and 7-node clusters, under drops, reorderings, partitions, crashes, and partial fsync. Election Safety, Log Matching, Leader Completeness, and State Machine Safety are checked after every step.
 4. Runtime chaos. Real `Node` instances (driver task, apply task, storage) connected through an in-process chaos transport. PRs run a 16-case smoke sweep; scheduled CI runs a heavier seeded sweep. The same safety invariants are asserted at the full-stack level.
 
-CI also enforces a workspace line-coverage floor, runs diff-scoped `cargo-mutants` smoke on PRs with full scheduled sweeps on the correctness-critical crates, and keeps scheduled `cargo-fuzz` corpus-building jobs for the wire codec, the engine, and disk recovery.
+There is also a loom model test for the transport task-registry shutdown race and a bounded Kani proof lane for core monotonicity/vote uniqueness invariants.
+
+CI also enforces a workspace line-coverage floor, runs `cargo-udeps`, diff-scoped `cargo-mutants` smoke on PRs with full scheduled sweeps on the correctness-critical crates, and keeps scheduled `cargo-fuzz` corpus-building jobs for the wire codec, the engine, and disk recovery.
 
 ## Status
 

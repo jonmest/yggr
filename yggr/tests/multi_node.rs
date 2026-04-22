@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -131,10 +131,9 @@ fn nid(n: u64) -> NodeId {
 }
 
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(41000);
+    let pid_bias = (std::process::id() % 2000) as u16;
+    NEXT_PORT.fetch_add(1, Ordering::Relaxed) + pid_bias
 }
 
 #[allow(dead_code)] // addr read for diagnostics; applied via Arc snapshots

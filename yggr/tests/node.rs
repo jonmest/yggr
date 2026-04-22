@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
@@ -89,10 +89,9 @@ fn nid(n: u64) -> NodeId {
 }
 
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(43000);
+    let pid_bias = (std::process::id() % 2000) as u16;
+    NEXT_PORT.fetch_add(1, Ordering::Relaxed) + pid_bias
 }
 
 async fn wait_for_status<S, F>(node: &Node<S>, deadline: Duration, mut predicate: F) -> NodeStatus

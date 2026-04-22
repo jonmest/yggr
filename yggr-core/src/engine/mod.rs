@@ -12,3 +12,6 @@ pub(crate) mod telemetry;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(kani)]
+mod verification;

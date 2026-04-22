@@ -25,7 +25,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use prost::Message as _;
@@ -38,6 +38,7 @@ use yggr_core::transport::protobuf as proto;
 use yggr_core::{Incoming, Message, NodeId};
 
 use crate::transport::Transport;
+use crate::transport::task_registry::TaskRegistry;
 
 /// Per-peer outgoing connection task. Reopens on failure.
 struct PeerLink {
@@ -65,7 +66,7 @@ pub struct TcpTransport<C> {
     writers: Vec<JoinHandle<()>>,
     /// Inbound per-connection reader tasks, tracked so drop can abort
     /// them promptly during shutdown.
-    readers: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+    readers: Arc<TaskRegistry>,
 }
 
 impl<C> std::fmt::Debug for TcpTransport<C> {
@@ -91,7 +92,7 @@ where
     ) -> io::Result<Self> {
         let listener = TcpListener::bind(listen_addr).await?;
         let (inbound_tx, inbound_rx) = mpsc::channel(1024);
-        let readers = Arc::new(StdMutex::new(Vec::new()));
+        let readers = Arc::new(TaskRegistry::default());
 
         let listener_task =
             tokio::spawn(accept_loop::<C>(listener, inbound_tx, Arc::clone(&readers)));
@@ -126,13 +127,7 @@ where
             abort_and_join(writer).await;
         }
 
-        let readers: Vec<JoinHandle<()>> = {
-            let mut readers = self
-                .readers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            readers.drain(..).collect()
-        };
+        let readers: Vec<JoinHandle<()>> = self.readers.drain();
         for reader in readers {
             abort_and_join(reader).await;
         }
@@ -206,7 +201,7 @@ where
 async fn accept_loop<C>(
     listener: TcpListener,
     inbound: mpsc::Sender<Incoming<C>>,
-    readers: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+    readers: Arc<TaskRegistry>,
 ) where
     C: Send + From<Vec<u8>> + 'static,
 {
@@ -215,10 +210,7 @@ async fn accept_loop<C>(
             Ok((stream, _peer_addr)) => {
                 let inbound = inbound.clone();
                 let reader = tokio::spawn(read_frames::<C>(stream, inbound));
-                readers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(reader);
+                readers.push(reader);
             }
             Err(e) => {
                 warn!(target = "yggr::transport", error = %e, "accept failed");
@@ -367,11 +359,7 @@ impl<C> Drop for TcpTransport<C> {
         for writer in &self.writers {
             writer.abort();
         }
-        let mut readers = self
-            .readers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for reader in readers.drain(..) {
+        for reader in self.readers.drain() {
             reader.abort();
         }
     }

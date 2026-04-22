@@ -48,6 +48,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - run: cargo clippy --all-targets -- -D warnings
 
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
+      - run: cargo doc --workspace --no-deps --all-features
+
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
@@ -79,6 +96,39 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
       - run: cargo nextest run --workspace --all-targets
       - run: cargo test --workspace --doc
+
+  loom:
+    name: loom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
+      - run: cargo test -p yggr --test loom_task_registry --release
+
+  udeps:
+    name: cargo-udeps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-udeps
+      - name: Install protoc + mold linker
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler mold clang
+      - run: cargo +nightly udeps --workspace --all-targets
 
   runtime-chaos-nightly:
     name: runtime-chaos-nightly
@@ -215,6 +265,21 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: "cargo test -p yggr-core engine::tests::invariants::"
+
+  kani:
+    name: kani
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Run bounded proofs on yggr-core
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: -p yggr-core --output-format=terse
 
   deny:
     name: cargo-deny

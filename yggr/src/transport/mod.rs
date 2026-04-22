@@ -10,6 +10,7 @@
 //! QUIC (`quinn`), or in-memory testing plug in their own
 //! [`Transport`].
 
+pub(crate) mod task_registry;
 pub mod tcp;
 
 pub use tcp::{TcpTransport, TcpTransportError};

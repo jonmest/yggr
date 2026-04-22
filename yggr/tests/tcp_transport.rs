@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,12 +27,10 @@ fn nid(n: u64) -> NodeId {
     NodeId::new(n).unwrap()
 }
 
-/// Pick a free loopback port by binding briefly.
 fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let p = l.local_addr().unwrap().port();
-    drop(l);
-    p
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(45000);
+    let pid_bias = (std::process::id() % 2000) as u16;
+    NEXT_PORT.fetch_add(1, Ordering::Relaxed) + pid_bias
 }
 
 async fn restart_transport_on_same_port(

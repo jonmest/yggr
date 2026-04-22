@@ -25,5 +25,8 @@ prost-build = "0.14"
 [dev-dependencies]
 proptest = "1"
 
+[package.metadata.kani.flags]
+default-unwind = "3"
+
 [lints]
 workspace = true

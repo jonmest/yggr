@@ -9,6 +9,7 @@ unreachable_pub = "warn"
 unused_lifetimes = "warn"
 unused_qualifications = "warn"
 missing_debug_implementations = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(loom)'] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

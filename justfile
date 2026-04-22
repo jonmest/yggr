@@ -50,6 +50,21 @@ mutants *args:
 coverage *args:
     cargo llvm-cov --workspace --all-targets {{args}}
 
+coverage-check:
+    cargo llvm-cov --workspace --all-targets --summary-only --fail-under-lines 86.5
+
+docs-check:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+
+udeps:
+    cargo +nightly udeps --workspace --all-targets
+
+loom-test:
+    cargo test -p yggr --test loom_task_registry --release
+
+kani *args:
+    cargo kani -p yggr-core {{args}}
+
 # ---------------------------------------------------------------------------
 # Fuzzing (cargo-fuzz, requires nightly). Targets live in `fuzz/`.
 # Run each for a short smoke with `just fuzz-smoke`; do a longer run
@@ -113,7 +128,12 @@ zizmor:
 sbom:
     cargo cyclonedx --format json
 
-ci: fmt-check clippy test deny audit unused-deps typos zizmor
+# Fast local gate.
+ci: fmt-check clippy test docs-check deny audit unused-deps typos zizmor
+
+# Approximate the pull-request CI checks that can run locally without
+# external tokens. Kani and the heavier scheduled lanes remain opt-in.
+ci-pr: fmt-check clippy test coverage-check docs-check deny audit unused-deps udeps typos zizmor loom-test fuzz-smoke
 
 # Run the GitHub Actions workflow locally via nektos/act. Requires docker.
 act *args:
