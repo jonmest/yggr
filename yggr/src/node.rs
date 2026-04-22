@@ -404,10 +404,14 @@ impl std::fmt::Display for Role {
 /// inspects it the node may have moved on.
 #[derive(Debug, Clone)]
 pub struct NodeStatus {
+    /// Stable shorthand for the local node id.
+    pub id: NodeId,
     /// Our own node id, copied from [`Config::node_id`].
     pub node_id: NodeId,
     /// Current role.
     pub role: Role,
+    /// Stable shorthand for the current term.
+    pub term: Term,
     /// Current Raft term (§5.1).
     pub current_term: Term,
     /// Highest log index known to be committed cluster-wide.
@@ -415,13 +419,45 @@ pub struct NodeStatus {
     /// Highest log index the driver has handed to the state machine.
     /// Always `<= commit_index`.
     pub last_applied: LogIndex,
+    /// Highest log index currently present in the local log.
+    pub last_log_index: LogIndex,
+    /// Stable shorthand for the current leader hint.
+    pub leader: Option<NodeId>,
     /// If we're a follower who has observed a current-term leader,
     /// its id; `None` otherwise (candidate, leader, or a follower
     /// that hasn't heard from anyone this term yet).
     pub leader_hint: Option<NodeId>,
+    /// Runtime-facing membership view. Learners are empty until
+    /// learner support lands.
+    pub membership: MembershipView,
     /// Active peer set (excluding self). Mutates as membership
     /// changes land; see `Node::add_peer` / `remove_peer`.
     pub peers: Vec<NodeId>,
+}
+
+/// Runtime-facing view of the node's membership.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MembershipView {
+    /// Voting peers excluding self.
+    pub voters: Vec<NodeId>,
+    /// Learners excluding self.
+    pub learners: Vec<NodeId>,
+}
+
+/// Runtime-facing metrics snapshot that wraps the engine counters with
+/// a small amount of node-level context.
+#[derive(Debug, Clone)]
+pub struct NodeMetrics {
+    /// Current role at the instant the metrics snapshot was taken.
+    pub role: Role,
+    /// Current leader hint, if known.
+    pub leader: Option<NodeId>,
+    /// Highest log index currently present in the local log.
+    pub last_log_index: LogIndex,
+    /// Membership view used by the runtime.
+    pub membership: MembershipView,
+    /// Raw engine counters and gauges.
+    pub engine: yggr_core::engine::metrics::EngineMetrics,
 }
 
 /// Errors `propose` / `add_peer` / `remove_peer` can return.
@@ -865,6 +901,20 @@ impl<S: StateMachine> Node<S> {
             Ok(m) => Ok(m),
             Err(_) => Err(ProposeError::DriverDead),
         }
+    }
+
+    /// Pull a runtime-facing metrics snapshot with a little extra
+    /// node context around the raw engine counters and gauges.
+    pub async fn node_metrics(&self) -> Result<NodeMetrics, ProposeError> {
+        let status = self.status().await?;
+        let engine = self.metrics().await?;
+        Ok(NodeMetrics {
+            role: status.role,
+            leader: status.leader,
+            last_log_index: status.last_log_index,
+            membership: status.membership,
+            engine,
+        })
     }
 
     /// Initiate a graceful shutdown. Returns once the driver has
@@ -1754,14 +1804,29 @@ where
         RoleState::Candidate(_) => (Role::Candidate, None),
         RoleState::Leader(_) => (Role::Leader, None),
     };
+    let peers: Vec<NodeId> = d.engine.peers().iter().copied().collect();
+    let membership = MembershipView {
+        voters: peers.clone(),
+        learners: Vec::new(),
+    };
+    let last_log_index = d
+        .engine
+        .log()
+        .last_log_id()
+        .map_or(LogIndex::ZERO, |id| id.index);
     NodeStatus {
+        id: d.node_id,
         node_id: d.node_id,
         role,
+        term: d.engine.current_term(),
         current_term: d.engine.current_term(),
         commit_index: d.engine.commit_index(),
         last_applied: d.last_applied,
+        last_log_index,
+        leader: leader_hint,
         leader_hint,
-        peers: d.engine.peers().iter().copied().collect(),
+        membership,
+        peers,
     }
 }
 

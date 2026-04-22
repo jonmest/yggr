@@ -1351,6 +1351,11 @@ async fn current_leader_matches_status_hint() {
 
     let status = node.status().await.unwrap();
     assert_eq!(node.current_leader().await.unwrap(), status.leader_hint);
+    assert_eq!(status.id, status.node_id);
+    assert_eq!(status.term, status.current_term);
+    assert_eq!(status.leader, status.leader_hint);
+    assert_eq!(status.membership.voters, status.peers);
+    assert!(status.membership.learners.is_empty());
 
     node.shutdown().await.unwrap();
 }
@@ -1384,4 +1389,39 @@ async fn admin_handle_forwards_membership_and_transfer_operations() {
     );
 
     admin.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn node_metrics_wrap_raw_engine_metrics_with_runtime_context() {
+    let (transport, _handle) = TestTransport::new();
+    let node = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        MemoryStorage::<Vec<u8>>::default(),
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader" && status.commit_index >= LogIndex::new(1)
+    })
+    .await;
+
+    assert_eq!(node.write(CountCmd::Inc(5)).await.unwrap(), 5);
+
+    let status = node.status().await.unwrap();
+    let raw = node.metrics().await.unwrap();
+    let wrapped = node.node_metrics().await.unwrap();
+
+    assert_eq!(wrapped.role.to_string(), status.role.to_string());
+    assert_eq!(wrapped.leader, status.leader);
+    assert_eq!(wrapped.last_log_index, status.last_log_index);
+    assert_eq!(wrapped.membership.voters, status.membership.voters);
+    assert!(wrapped.membership.learners.is_empty());
+    assert_eq!(wrapped.engine.current_term, raw.current_term);
+    assert_eq!(wrapped.engine.commit_index, raw.commit_index);
+    assert_eq!(wrapped.engine.entries_applied, raw.entries_applied);
+
+    node.shutdown().await.unwrap();
 }

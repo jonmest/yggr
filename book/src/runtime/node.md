@@ -22,6 +22,7 @@ let node = Node::start(config, state_machine, storage, transport).await?;
 | `current_leader()` | Return the current leader hint, if known. |
 | `transfer_leadership_to(peer)` | Hand leadership to a follower. |
 | `status()` | Current role, term, commit index, known leader. |
+| `node_metrics()` | Runtime-facing metrics wrapper around the raw engine counters and gauges. |
 | `shutdown()` | Drain and stop every background task. |
 
 See [rustdoc for `Node`](../api/yggr/struct.Node.html) for full signatures.
