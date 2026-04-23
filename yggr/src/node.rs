@@ -433,6 +433,10 @@ pub struct NodeStatus {
     /// Active peer set (excluding self). Mutates as membership
     /// changes land; see `Node::add_peer` / `remove_peer`.
     pub peers: Vec<NodeId>,
+    /// High-level liveness signal: running, shutting down, or fatal.
+    /// Useful for dashboards / health checks; `Running` is the
+    /// steady state.
+    pub health: NodeHealth,
 }
 
 /// Runtime-facing view of the node's membership.
@@ -442,6 +446,35 @@ pub struct MembershipView {
     pub voters: Vec<NodeId>,
     /// Learners excluding self.
     pub learners: Vec<NodeId>,
+}
+
+/// High-level liveness signal for a [`Node`].
+///
+/// `Running` is the steady state. `ShuttingDown` is set once the
+/// driver begins draining on [`Node::shutdown`]; subsequent
+/// `status()` calls will observe it briefly until the driver exits.
+/// `Fatal` is set when the driver has hit a non-recoverable error
+/// (e.g. storage write failure) and is unwinding; outstanding
+/// proposals are failed and the driver task exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeHealth {
+    /// Normal operation.
+    #[default]
+    Running,
+    /// Graceful shutdown in progress.
+    ShuttingDown,
+    /// Unrecoverable runtime error; driver is exiting.
+    Fatal,
+}
+
+impl std::fmt::Display for NodeHealth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Running => f.write_str("running"),
+            Self::ShuttingDown => f.write_str("shutting-down"),
+            Self::Fatal => f.write_str("fatal"),
+        }
+    }
 }
 
 /// Runtime-facing metrics snapshot that wraps the engine counters with
@@ -701,6 +734,7 @@ impl<S: StateMachine> Node<S> {
             max_batch_entries: config.max_batch_entries,
             last_applied: LogIndex::ZERO,
             snapshot_in_flight: false,
+            health: NodeHealth::Running,
         };
         let driver: JoinHandle<()> = tokio::spawn(driver_loop(driver_state, recovered));
 
@@ -1083,6 +1117,10 @@ struct Driver<S: StateMachine, St, Tr> {
     /// crossed, and serialising concurrent snapshots on the same
     /// state machine would double the work for nothing.
     snapshot_in_flight: bool,
+    /// High-level liveness, surfaced through [`Node::status`]. Starts
+    /// as `Running`, flips to `ShuttingDown` when shutdown begins, or
+    /// `Fatal` when the driver hits an unrecoverable error.
+    health: NodeHealth,
 }
 
 struct PendingRead<S: StateMachine> {
@@ -1239,6 +1277,7 @@ where
                     }
                     DriverInput::Shutdown { reply } => {
                         debug!(target = "yggr::node", "shutdown requested");
+                        d.health = NodeHealth::ShuttingDown;
                         // Best-effort flush of any buffered proposals so
                         // waiters see their result rather than dropping.
                         let _ = flush_batch(&mut d).await;
@@ -1257,6 +1296,7 @@ where
             }
         };
         if let Err(Fatal { reason }) = result {
+            d.health = NodeHealth::Fatal;
             fail_all_pending(&mut d, reason);
             return;
         }
@@ -1885,6 +1925,7 @@ where
         leader_hint,
         membership,
         peers,
+        health: d.health,
     }
 }
 

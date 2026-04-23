@@ -1475,3 +1475,27 @@ async fn node_metrics_wrap_raw_engine_metrics_with_runtime_context() {
 
     node.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn status_health_reports_running() {
+    use yggr::NodeHealth;
+    let (transport, _handle) = TestTransport::new();
+    let node = Node::start(
+        fast_single_node_config(),
+        Counter::default(),
+        MemoryStorage::<Vec<u8>>::default(),
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader"
+    })
+    .await;
+
+    let status = node.status().await.unwrap();
+    assert_eq!(status.health, NodeHealth::Running);
+
+    node.shutdown().await.unwrap();
+}
