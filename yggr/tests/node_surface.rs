@@ -559,7 +559,7 @@ where
     }
 }
 
-async fn wait_for_status_error<S>(node: &Node<S>, deadline: Duration) -> ProposeError
+async fn wait_for_status_error<S>(node: &Node<S>, deadline: Duration) -> yggr::StatusError
 where
     S: StateMachine,
 {
@@ -1123,7 +1123,7 @@ async fn post_shutdown_api_calls_return_shutdown_errors() {
     let status_err = wait_for_status_error(&clone, Duration::from_secs(1)).await;
     assert!(matches!(
         status_err,
-        ProposeError::Shutdown | ProposeError::DriverDead
+        yggr::StatusError::Shutdown | yggr::StatusError::DriverDead
     ));
 
     let err = clone.propose(CountCmd::Inc(1)).await.unwrap_err();
@@ -1218,7 +1218,7 @@ async fn persist_hard_state_failure_shuts_down_the_runtime() {
     let err = wait_for_status_error(&node, Duration::from_secs(1)).await;
     assert!(matches!(
         err,
-        ProposeError::Shutdown | ProposeError::DriverDead
+        yggr::StatusError::Shutdown | yggr::StatusError::DriverDead
     ));
 }
 
@@ -1247,7 +1247,7 @@ async fn persist_snapshot_failure_kills_the_node_after_snapshot_hint() {
     let err = wait_for_status_error(&node, Duration::from_secs(1)).await;
     assert!(matches!(
         err,
-        ProposeError::Shutdown | ProposeError::DriverDead
+        yggr::StatusError::Shutdown | yggr::StatusError::DriverDead
     ));
     assert!(
         snapshots_taken.load(Ordering::Relaxed) >= 1,

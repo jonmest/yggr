@@ -493,6 +493,33 @@ pub struct NodeMetrics {
     pub engine: yggr_core::engine::metrics::EngineMetrics,
 }
 
+/// Errors [`Node::status`] and the metrics accessors can return.
+///
+/// Status / metrics are informational — they never fail because of a
+/// leadership or quorum condition. The only thing that prevents a
+/// read is the driver being gone. `Fatal` runtime errors surface as
+/// `NodeHealth::Fatal` on the `NodeStatus` itself, not as an error
+/// here.
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum StatusError {
+    /// The runtime is shutting down.
+    Shutdown,
+    /// The driver task has exited.
+    DriverDead,
+}
+
+impl std::fmt::Display for StatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shutdown => write!(f, "node is shutting down"),
+            Self::DriverDead => write!(f, "node driver task died"),
+        }
+    }
+}
+
+impl std::error::Error for StatusError {}
+
 /// Errors `propose` / `add_peer` / `remove_peer` can return.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -902,7 +929,7 @@ impl<S: StateMachine> Node<S> {
     /// changed role, advanced its term, or mutated membership by the
     /// time the caller inspects it. Use it for dashboards, health
     /// checks, and debugging, not for correctness-critical logic.
-    pub async fn status(&self) -> Result<NodeStatus, ProposeError> {
+    pub async fn status(&self) -> Result<NodeStatus, StatusError> {
         let (tx, rx) = oneshot::channel();
         if self
             .inputs
@@ -910,17 +937,17 @@ impl<S: StateMachine> Node<S> {
             .await
             .is_err()
         {
-            return Err(ProposeError::Shutdown);
+            return Err(StatusError::Shutdown);
         }
         match rx.await {
             Ok(s) => Ok(s),
-            Err(_) => Err(ProposeError::DriverDead),
+            Err(_) => Err(StatusError::DriverDead),
         }
     }
 
     /// Return the current leader hint, if known, without forcing
     /// callers to inspect the full [`NodeStatus`].
-    pub async fn current_leader(&self) -> Result<Option<NodeId>, ProposeError> {
+    pub async fn current_leader(&self) -> Result<Option<NodeId>, StatusError> {
         Ok(self.status().await?.leader_hint)
     }
 
@@ -933,7 +960,7 @@ impl<S: StateMachine> Node<S> {
     /// inspects it, the node may have processed more events.
     ///
     /// Returns an error if the driver has shut down.
-    pub async fn metrics(&self) -> Result<yggr_core::engine::metrics::EngineMetrics, ProposeError> {
+    pub async fn metrics(&self) -> Result<yggr_core::engine::metrics::EngineMetrics, StatusError> {
         let (tx, rx) = oneshot::channel();
         if self
             .inputs
@@ -941,17 +968,17 @@ impl<S: StateMachine> Node<S> {
             .await
             .is_err()
         {
-            return Err(ProposeError::Shutdown);
+            return Err(StatusError::Shutdown);
         }
         match rx.await {
             Ok(m) => Ok(m),
-            Err(_) => Err(ProposeError::DriverDead),
+            Err(_) => Err(StatusError::DriverDead),
         }
     }
 
     /// Pull a runtime-facing metrics snapshot with a little extra
     /// node context around the raw engine counters and gauges.
-    pub async fn node_metrics(&self) -> Result<NodeMetrics, ProposeError> {
+    pub async fn node_metrics(&self) -> Result<NodeMetrics, StatusError> {
         let status = self.status().await?;
         let engine = self.metrics().await?;
         Ok(NodeMetrics {

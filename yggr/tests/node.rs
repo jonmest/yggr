@@ -681,6 +681,6 @@ async fn metrics_after_shutdown_return_error() {
         .expect_err("metrics on shut-down node must fail");
     assert!(matches!(
         err,
-        ProposeError::Shutdown | ProposeError::DriverDead
+        yggr::StatusError::Shutdown | yggr::StatusError::DriverDead
     ));
 }
