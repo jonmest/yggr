@@ -898,6 +898,53 @@ async fn runtime_auto_snapshots_on_hint_by_default() {
 }
 
 #[tokio::test]
+async fn admin_trigger_snapshot_forces_a_snapshot_past_the_threshold() {
+    let (transport, _handle) = TestTransport::new();
+    let snapshots_taken = Arc::new(AtomicUsize::new(0));
+    let storage = SharedMemoryStorage::<Vec<u8>>::default();
+    let snapshot_view = Arc::clone(&storage.inner);
+    // Threshold deliberately set high so the auto-hint path wouldn't
+    // fire here; only the explicit trigger should produce a snapshot.
+    let mut config = fast_single_node_config();
+    config.snapshot_hint_threshold_entries = 10_000;
+
+    let node = Node::start(
+        config,
+        SnapshottingCounter::new(Arc::clone(&snapshots_taken)),
+        storage,
+        transport,
+    )
+    .await
+    .unwrap();
+
+    let _ = wait_for_status(&node, Duration::from_secs(1), |status| {
+        status.role.to_string() == "leader" && status.commit_index >= LogIndex::new(1)
+    })
+    .await;
+    assert_eq!(node.propose(CountCmd::Inc(7)).await.unwrap(), 7);
+
+    node.admin().trigger_snapshot().await.unwrap();
+
+    let start = tokio::time::Instant::now();
+    loop {
+        let snapshot = snapshot_view.lock().unwrap().snapshot.clone();
+        if let Some(snapshot) = snapshot {
+            assert_eq!(snapshot.last_included_index, LogIndex::new(2));
+            assert_eq!(snapshot.bytes, 7u64.to_le_bytes().to_vec());
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "triggered snapshot was never persisted"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(snapshots_taken.load(Ordering::Relaxed) >= 1);
+
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn snapshot_hints_can_be_disabled_via_config() {
     let (transport, _handle) = TestTransport::new();
     let snapshots_taken = Arc::new(AtomicUsize::new(0));

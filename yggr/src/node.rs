@@ -906,6 +906,22 @@ impl<S: StateMachine> Node<S> {
         }
     }
 
+    async fn trigger_snapshot_inner(&self) -> Result<(), StatusError> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .inputs
+            .send(DriverInput::TriggerSnapshot { reply: tx })
+            .await
+            .is_err()
+        {
+            return Err(StatusError::Shutdown);
+        }
+        match rx.await {
+            Ok(r) => r,
+            Err(_) => Err(StatusError::DriverDead),
+        }
+    }
+
     async fn config_change(&self, change: ConfigChange) -> Result<(), ProposeError> {
         let (tx, rx) = oneshot::channel();
         if self
@@ -1084,6 +1100,17 @@ impl<S: StateMachine> AdminHandle<S> {
         self.node.transfer_leadership_inner(peer).await
     }
 
+    /// Force a snapshot at the node's current `commit_index`.
+    ///
+    /// Idempotent — if a snapshot is already in flight the call
+    /// returns immediately and coalesces with the in-flight one.
+    /// Fire-and-forget: this does not wait for the snapshot to
+    /// complete. Poll `node.metrics()` if you need to confirm
+    /// completion.
+    pub async fn trigger_snapshot(&self) -> Result<(), StatusError> {
+        self.node.trigger_snapshot_inner().await
+    }
+
     /// Initiate a graceful shutdown of the runtime.
     pub async fn shutdown(self) -> Result<(), ProposeError> {
         self.node.shutdown().await
@@ -1251,6 +1278,14 @@ enum DriverInput<S: StateMachine> {
     Shutdown {
         reply: oneshot::Sender<()>,
     },
+    /// Operator-initiated snapshot. Fires the same `TakeSnapshot`
+    /// path as an `Action::SnapshotHint`, but independent of the
+    /// applied-entries threshold. Idempotent: if a snapshot is
+    /// already in flight the driver just acks immediately and the
+    /// caller's request coalesces with it.
+    TriggerSnapshot {
+        reply: oneshot::Sender<Result<(), StatusError>>,
+    },
     /// Delivered by the snapshot-forwarder task when the apply task
     /// finishes serialising state. Carries the bytes into the driver
     /// so it can feed them to the engine via `Event::SnapshotTaken`.
@@ -1301,6 +1336,16 @@ where
                     }
                     DriverInput::SnapshotReady { last_included_index, bytes } => {
                         handle_snapshot_ready(&mut d, last_included_index, bytes).await
+                    }
+                    DriverInput::TriggerSnapshot { reply } => {
+                        let last = d.engine.commit_index();
+                        let result = kick_snapshot(&mut d, last).await;
+                        let user_reply = match &result {
+                            Ok(()) => Ok(()),
+                            Err(_) => Err(StatusError::DriverDead),
+                        };
+                        let _ = reply.send(user_reply);
+                        result
                     }
                     DriverInput::Shutdown { reply } => {
                         debug!(target = "yggr::node", "shutdown requested");
@@ -1800,53 +1845,7 @@ where
             Action::SnapshotHint {
                 last_included_index,
             } => {
-                // Fire the snapshot request off to the apply task and
-                // a forwarder task, then keep going. The forwarder
-                // posts a `SnapshotReady` input when the (potentially
-                // very slow) `StateMachine::snapshot` call returns;
-                // the driver stays responsive to ticks, RPCs, and
-                // user calls in the meantime.
-                //
-                // If a hint arrives while a previous snapshot is
-                // still in flight we drop it: the engine re-issues
-                // hints each time the applied-entries threshold is
-                // crossed anew.
-                if d.snapshot_in_flight {
-                    continue;
-                }
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if d.apply_tx
-                    .send(ApplyRequest::TakeSnapshot { reply: reply_tx })
-                    .await
-                    .is_err()
-                {
-                    return Err(Fatal {
-                        reason: "apply task died",
-                    });
-                }
-                d.snapshot_in_flight = true;
-                let inputs_tx = d.inputs_tx.clone();
-                tokio::spawn(async move {
-                    let bytes = match reply_rx.await {
-                        Ok(Ok(bytes)) => Some(bytes),
-                        Ok(Err(err)) => {
-                            tracing::warn!(
-                                target = "yggr::node",
-                                error = %err,
-                                "state machine declined to produce a snapshot; \
-                                 dropping this hint, engine will re-hint later",
-                            );
-                            None
-                        }
-                        Err(_) => None,
-                    };
-                    let _ = inputs_tx
-                        .send(DriverInput::SnapshotReady {
-                            last_included_index,
-                            bytes,
-                        })
-                        .await;
-                });
+                kick_snapshot(d, last_included_index).await?;
             }
             Action::Redirect { .. } => {
                 // Already handled at the propose call site; engine
@@ -1894,6 +1893,60 @@ where
     // apply_entries never runs — meaning its CC-waiter fire block
     // never runs either. Fire them here on every action batch.
     fire_committed_config_change_waiters(d);
+    Ok(())
+}
+
+/// Kick off a snapshot: hand the state machine a `TakeSnapshot`
+/// request and spawn a forwarder that posts the bytes back via
+/// `DriverInput::SnapshotReady` when (if) they arrive. Idempotent —
+/// when a snapshot is already in flight this is a no-op, the
+/// in-flight one will emit its own `SnapshotReady`. The engine re-
+/// hints if the threshold is crossed again afterwards.
+async fn kick_snapshot<S, St, Tr>(
+    d: &mut Driver<S, St, Tr>,
+    last_included_index: LogIndex,
+) -> Result<(), Fatal>
+where
+    S: StateMachine,
+    St: Storage<Vec<u8>>,
+    Tr: Transport<Vec<u8>>,
+{
+    if d.snapshot_in_flight {
+        return Ok(());
+    }
+    let (reply_tx, reply_rx) = oneshot::channel();
+    if d.apply_tx
+        .send(ApplyRequest::TakeSnapshot { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return Err(Fatal {
+            reason: "apply task died",
+        });
+    }
+    d.snapshot_in_flight = true;
+    let inputs_tx = d.inputs_tx.clone();
+    tokio::spawn(async move {
+        let bytes = match reply_rx.await {
+            Ok(Ok(bytes)) => Some(bytes),
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    target = "yggr::node",
+                    error = %err,
+                    "state machine declined to produce a snapshot; \
+                     dropping this request, engine will re-hint later",
+                );
+                None
+            }
+            Err(_) => None,
+        };
+        let _ = inputs_tx
+            .send(DriverInput::SnapshotReady {
+                last_included_index,
+                bytes,
+            })
+            .await;
+    });
     Ok(())
 }
 
