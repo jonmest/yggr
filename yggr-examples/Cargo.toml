@@ -12,5 +12,11 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "n
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# cargo-husky installs the .cargo-husky/hooks/* scripts into
+# .git/hooks/ on first build. Lives here (publish = false) so it
+# doesn't taint published crates' metadata.
+[dev-dependencies]
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+
 [lints]
 workspace = true

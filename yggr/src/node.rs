@@ -826,10 +826,7 @@ impl<S: StateMachine> Node<S> {
         self.transfer_leadership_inner(peer).await
     }
 
-    async fn transfer_leadership_inner(
-        &self,
-        peer: NodeId,
-    ) -> Result<(), TransferLeadershipError> {
+    async fn transfer_leadership_inner(&self, peer: NodeId) -> Result<(), TransferLeadershipError> {
         let (tx, rx) = oneshot::channel();
         if self
             .inputs
@@ -991,9 +988,7 @@ impl<S: StateMachine> AdminHandle<S> {
     /// Add a peer to the cluster as a voter (§4.3 single-server
     /// change). Returns once the change commits.
     pub async fn add_peer(&self, peer: NodeId) -> Result<(), ProposeError> {
-        self.node
-            .config_change(ConfigChange::AddPeer(peer))
-            .await
+        self.node.config_change(ConfigChange::AddPeer(peer)).await
     }
 
     /// Remove a peer from the cluster (§4.3 single-server change).

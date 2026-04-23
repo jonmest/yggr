@@ -299,7 +299,10 @@ mod tests {
         pp.record_success(node(2), idx(5));
         pp.record_success(node(3), idx(3));
         // Sorted values: [3, 5, 7]. Pos 1 = 5.
-        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(5));
+        assert_eq!(
+            pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)),
+            idx(5)
+        );
     }
 
     #[test]
@@ -312,21 +315,30 @@ mod tests {
         pp.record_success(node(4), idx(3));
         pp.record_success(node(5), idx(2));
         // Sorted values: [2, 3, 5, 5, 7]. Pos 2 = 5.
-        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(5));
+        assert_eq!(
+            pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)),
+            idx(5)
+        );
     }
 
     #[test]
     fn majority_index_without_replication_is_zero() {
         let pp = PeerProgress::new([node(2), node(3)], idx(7));
         // Sorted values: [0, 0, 7]. Pos 1 = 0 — leader alone isn't a majority.
-        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), LogIndex::ZERO);
+        assert_eq!(
+            pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)),
+            LogIndex::ZERO
+        );
     }
 
     #[test]
     fn majority_index_with_no_peers_returns_leader_last() {
         let pp = PeerProgress::new(std::iter::empty(), idx(5));
         // Only the leader. Cluster of 1, majority of 1 = the leader itself.
-        assert_eq!(pp.majority_index_over_voters(idx(5), &all_as_voters(&pp)), idx(5));
+        assert_eq!(
+            pp.majority_index_over_voters(idx(5), &all_as_voters(&pp)),
+            idx(5)
+        );
     }
 
     #[test]
@@ -338,7 +350,10 @@ mod tests {
         pp.record_success(node(3), idx(5));
         pp.record_success(node(4), idx(2));
         // Sorted values: [2, 5, 5, 7]. Pos 1 = 5. Three of four are ≥ 5. ✓
-        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(5));
+        assert_eq!(
+            pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)),
+            idx(5)
+        );
     }
 
     #[test]
@@ -354,7 +369,10 @@ mod tests {
         // Sorted values: [2, 3, 5, 7]. Pos 1 = 3 (three of four ≥ 3).
         // Upper-middle would be 5, but only two of four are ≥ 5, so 5
         // is NOT a safe commit point.
-        assert_eq!(pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)), idx(3));
+        assert_eq!(
+            pp.majority_index_over_voters(idx(7), &all_as_voters(&pp)),
+            idx(3)
+        );
     }
 
     // ---------------- record_success vs stale after conflict ----------------

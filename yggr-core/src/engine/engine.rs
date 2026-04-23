@@ -1320,9 +1320,7 @@ impl<C: Clone> Engine<C> {
                 let voter_grants = state
                     .votes_granted
                     .iter()
-                    .filter(|id| {
-                        **id == self.id || self.state.membership.contains_voter(id)
-                    })
+                    .filter(|id| **id == self.id || self.state.membership.contains_voter(id))
                     .count();
                 voter_grants >= self.cluster_majority()
             }
@@ -1446,9 +1444,7 @@ impl<C: Clone> Engine<C> {
                 let voter_grants = p
                     .grants
                     .iter()
-                    .filter(|id| {
-                        **id == self.id || self.state.membership.contains_voter(id)
-                    })
+                    .filter(|id| **id == self.id || self.state.membership.contains_voter(id))
                     .count();
                 voter_grants >= self.cluster_majority()
             }
@@ -2082,7 +2078,9 @@ impl<C: Clone> Engine<C> {
         let RoleState::Leader(leader) = &self.state.role else {
             unreachable!("just matched");
         };
-        let n = leader.progress.majority_index_over_voters(leader_last, &voters);
+        let n = leader
+            .progress
+            .majority_index_over_voters(leader_last, &voters);
         if n > self.state.commit_index && self.state.log.term_at(n) == Some(self.state.current_term)
         {
             let prior_commit = self.state.commit_index;

@@ -27,6 +27,22 @@ cargo kani setup
 
 If you want to run the GitHub Actions workflow locally, install `act` and Docker.
 
+## Git hooks
+
+`cargo-husky` (a dev-dep on `yggr-examples`) auto-installs these hooks on your first `cargo test`:
+
+- **pre-commit** — `cargo fmt --check` and `cargo clippy --workspace --all-targets -- -D warnings`. ~30 s warm.
+- **pre-push** — `cargo test --workspace --lib`. ~5 s warm.
+
+The scripts live at `.cargo-husky/hooks/`, so they're version-controlled. To bypass for a genuine emergency:
+
+```
+git commit --no-verify       # or: SKIP_HOOKS=1 git commit
+git push --no-verify         # or: SKIP_HOOKS=1 git push
+```
+
+Heavier suites (integration tests, doc tests, fuzz, mutants, coverage) are CI's job — the hooks are kept fast on purpose.
+
 ## Build and test
 
 ```

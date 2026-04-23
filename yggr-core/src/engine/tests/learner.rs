@@ -205,4 +205,3 @@ fn learner_rejects_vote_requests() {
         .expect("learner must still reply, just with Rejected");
     assert_eq!(response.result, VoteResult::Rejected);
 }
-

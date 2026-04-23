@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# yggr pre-commit hook (installed by cargo-husky from .cargo-husky/hooks/).
+#
+# Runs fast checks that catch the noisiest review feedback:
+#   - cargo fmt --check (sub-second)
+#   - cargo clippy --workspace --all-targets -- -D warnings
+#
+# Bypass for genuine emergencies:
+#   git commit --no-verify
+#   SKIP_HOOKS=1 git commit
+#
+# Heavier suites (full tests, doc tests, fuzz, mutants, coverage) are
+# CI's job — kept out of the hook so the loop stays under ~30s warm.
+
+set -euo pipefail
+
+if [[ "${SKIP_HOOKS:-0}" = "1" ]]; then
+  echo "pre-commit: SKIP_HOOKS=1 — skipping" >&2
+  exit 0
+fi
+
+echo "pre-commit: cargo fmt --check"
+cargo fmt --check
+
+echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets -- -D warnings

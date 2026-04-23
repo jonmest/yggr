@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# yggr pre-push hook (installed by cargo-husky from .cargo-husky/hooks/).
+#
+# Runs the workspace library unit tests before letting a push reach
+# the remote. Library tests are fast (~5s warm) and catch most
+# regressions. Integration tests, doc tests, fuzz, mutants, chaos —
+# CI's job.
+#
+# Bypass for genuine emergencies:
+#   git push --no-verify
+#   SKIP_HOOKS=1 git push
+
+set -euo pipefail
+
+if [[ "${SKIP_HOOKS:-0}" = "1" ]]; then
+  echo "pre-push: SKIP_HOOKS=1 — skipping" >&2
+  exit 0
+fi
+
+echo "pre-push: cargo test --workspace --lib"
+cargo test --workspace --lib
