@@ -203,38 +203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yggr"
-version = "0.1.0"
-dependencies = [
- "yggr-core",
- "prost",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "yggr-core"
-version = "0.1.0"
-dependencies = [
- "prost",
- "prost-build",
- "tracing",
-]
-
-[[package]]
-name = "yggr-fuzz"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "yggr",
- "yggr-core",
- "libfuzzer-sys",
- "prost",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,9 +505,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.52.1"
+version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b67dee974fe86fd92cc45b7a95fdd2f99a36a6d7b0d431a231178d3d670bbcc6"
+checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
  "bytes",
  "libc",
@@ -769,6 +737,38 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "yggr"
+version = "0.2.0"
+dependencies = [
+ "prost",
+ "tokio",
+ "tracing",
+ "yggr-core",
+]
+
+[[package]]
+name = "yggr-core"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "prost-build",
+ "tracing",
+]
+
+[[package]]
+name = "yggr-fuzz"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "libfuzzer-sys",
+ "prost",
+ "tempfile",
+ "tokio",
+ "yggr",
+ "yggr-core",
 ]
 
 [[package]]
